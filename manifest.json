@@ -1,0 +1,9 @@
+{
+	"id": "xhs-workbench",
+	"name": "带货工作台",
+	"version": "0.1.0",
+	"minAppVersion": "1.4.0",
+	"description": "小红书带货工作台：把已确认的高保真稿做成插件视图。B1 = 骨架 + 5 页路由 + 三页接真数据（只读）。",
+	"author": "GitBinS",
+	"isDesktopOnly": true
+}

@@ -1,0 +1,505 @@
+/* ⚠️ 由 _UI稿/工作台-A改进版-20260926.html 的 <style> 于 B1 迁移而来（2026-09-29）。
+   改动只有一处：**每条选择器都加了根前缀 .xhs-wb-root**。
+   为什么必须做：插件样式表是全局加载的，原稿里 .btn / .pill / .tb 这类类选择器若不带根
+   会直接作用到 Obsidian 自身 UI 与其他插件上。改视觉请改本文件；原稿冻结为视觉参考。 */
+
+/* ══ 插件宿主适配（手写，非迁移）—— 让视图铺满 leaf 内容区 ══ */
+.workspace-leaf-content[data-type="xhs-workbench-view"] .view-content{padding:0;overflow:hidden}
+.xhs-wb-host{height:100%;padding:0}
+/* ════════════════════════════════════════════════════════════
+   基于「A 编辑感」，按老哥反馈迭代：
+   ① 圆角 5 → 12（更圆）
+   ② 主色：近黑 → 深墨蓝 → 靛蓝 → DeepSeek 蓝 → 湖蓝 → **天青 #0F76C4（老哥选定 D）**
+   ③ 加视觉锚点：「待发布」指标卡改深色底 + 白字（解决"平铺没重点"）
+   ④ 灰字加深 + 小字加字重（解决"字体虚"）
+   ⑤ 留白节奏拉大：区块间距 22 → 30
+   ⑥ 大数字 29 → 34
+   ⑦ 「近期发布计划」与下方「待发布」表重复 → 改为「今晚回填」
+   ⑧ 顶部页签 → 左侧竖排导航（**168px**），**可折叠成 60px 缩小态**
+   ⑨ 「内容栏」宽 **自适应**（`--content = min(1720px, 100% - 2×clamp(28px,4vw,88px))`）——
+      内容区 / 顶部导航条内容 / 顶部壁纸横幅 **共用同一个值**，缩放时三者永远对齐；
+      内边距 `--pad-x`（20–34px）也跟着一起收放
+   ⑩ 「布局」入口：位置槽 4 个 ＋ **候选池 9 个**（全部取自结构文档）＋ 每块标题旁「换」
+   ⑪ 「30 天进度」→ **「当前路线图」**（模块绑数据源、不绑周期；补阶段名「基建周」）
+   ⑫ 顶部**壁纸横幅**（默认一套；右上角「更换壁纸」，hover 显现 / 移开隐藏）
+   ⑬ 响应式断点**按「内容区实际宽度」判断**（JS 写 html[data-cw]，非 @media）：
+      lg ≥1040 ｜ sm 720–1040 ｜ xs <720
+   ════════════════════════════════════════════════════════════ */
+.xhs-wb-root{
+  --bg:#ffffff;
+  --card:#ffffff;
+  --line:#e3e5e8;
+  --line-soft:#eef0f2;
+  --ink:#15181d;
+  --ink-2:#444a54;
+  --ink-3:#6b7280;
+  --brand:#0f76c4;         /* 主色：天青（白字对比 4.76:1 ✅） */
+  --brand-text:#0d66ab;    /* 浅底上的蓝字（在淡底上 5.35:1 ✅） */
+  --brand-deep:#0c5e9d;    /* 深底卡渐变暗端（白字 6.77:1 ✅） */
+  --brand-soft:#e7f4fd;    /* 主色淡底（药丸/选中背景） */
+  --warn:#b45309;
+  --warn-soft:#fef6ee;
+  /* 药丸三档（老哥 09-28：「三档不明显」→ 按**明度**分层，两两亮度比 ≥1.10 才算肉眼可辨）
+     属性最浅 → 数量居中 → 需处理最深；每档的"字/圆点"色都已验过对比度 ≥5.2:1 */
+  --tier-plain-bg:#e5e9ee;  --tier-plain-fg:#383e46;  --tier-plain-bd:#ccd3dc;
+  --tier-acc-bg:#c6def7;    --tier-acc-fg:#0a5391;    --tier-acc-bd:#9fc4ec;
+  --tier-wr-bg:#f7c994;     --tier-wr-fg:#78350a;     --tier-wr-bd:#e7a865;
+  /* 「内容栏」宽：**随视口自适应，不再写死**
+     · 两侧留白 --gutter：4vw，夹在 28–88px（窄屏不贴边、超宽屏不过散）
+     · 内容上限 1720px：超宽屏不再无限拉宽（一行拖太长反而难读）
+     · 内容区 / 顶部导航条内容 / 顶部壁纸横幅 三处共用它 → 缩放时永远对齐 */
+  --gutter:clamp(28px, 4vw, 88px);
+  --content:min(1720px, 100% - var(--gutter) * 2);
+  /* 内容区左右内边距：跟内容栏一起收放；顶部导航条也用它算文字起点 */
+  --pad-x:clamp(20px, 2.4vw, 34px);
+  --r-card:12px;
+  --r-btn:8px;
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+}.xhs-wb-root *{box-sizing:border-box;margin:0;padding:0}.xhs-wb-root{
+  background:var(--bg);color:var(--ink);font-family:var(--font);
+  font-size:13.5px;line-height:1.55;-webkit-font-smoothing:antialiased;
+}.xhs-wb-root .num{font-variant-numeric:tabular-nums}/* ── 骨架：左侧导航 + 内容 ── */
+.xhs-wb-root .shell{display:flex;min-height:100vh}.xhs-wb-root .side{
+  flex:0 0 168px;width:168px;border-right:1px solid var(--line);
+  padding:24px 12px;background:var(--card);
+  position:sticky;top:0;height:100vh;
+  display:flex;flex-direction:column;gap:2px;
+  transition:flex-basis .18s ease,width .18s ease,padding .18s ease;
+}.xhs-wb-root .nav{display:block;font-size:13px;color:var(--ink-2);padding:9px 13px;border-radius:var(--r-btn);font-weight:500}.xhs-wb-root .nav-ic{display:none;font-style:normal}.xhs-wb-root .nav.on{background:var(--brand);color:#fff;font-weight:600}.xhs-wb-root .side-foot{margin-top:auto;padding:12px 13px 4px;border-top:1px solid var(--line-soft)}.xhs-wb-root .sf-acct{font-size:12.5px;font-weight:600;color:var(--ink-2)}.xhs-wb-root .sf-day{font-size:11.5px;color:var(--ink-3);font-weight:500;margin-top:2px}/* 依赖状态：左侧模式下竖排；顶部模式下由 .shell.top 改成横排 */
+.xhs-wb-root .dep-list{display:flex;flex-direction:column;gap:4px;margin-top:13px;padding-top:12px;border-top:1px solid var(--line-soft)}.xhs-wb-root .dep-list .dep-i{font-size:11px;color:var(--ink-3);font-weight:500}.xhs-wb-root .dep-list .dep-t{font-size:11px;color:var(--ink-3);font-weight:500;padding-left:0;border-left:0;margin-top:1px}/* ⑧ 折叠开关 + 缩小态 */
+/* 侧栏标题行：折叠键挂到标题右端 —— 参考图里它从不单独出现，总是跟在标题后面 */
+.xhs-wb-root .side-head{display:flex;align-items:center;justify-content:space-between;gap:6px;
+  padding:0 0 0 13px;margin-bottom:16px;min-height:24px}.xhs-wb-root .side-title{font-size:13px;font-weight:600;color:var(--ink-2);letter-spacing:-.005em;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.xhs-wb-root .side-toggle{
+  flex:0 0 auto;width:22px;height:22px;
+  border:0;background:none;color:var(--ink-3);cursor:pointer;
+  font:inherit;font-size:14px;line-height:1;border-radius:5px;
+  display:flex;align-items:center;justify-content:center;
+}.xhs-wb-root .side-toggle:hover{background:#f2f3f5;color:var(--ink)}.xhs-wb-root .side.mini{flex:0 0 60px;width:60px;padding:24px 8px}.xhs-wb-root .side.mini .side-head{justify-content:center;padding:0}.xhs-wb-root .side.mini .side-title{display:none}.xhs-wb-root .side.mini .nav{padding:9px 0;text-align:center}.xhs-wb-root .side.mini .nav-tx{display:none}.xhs-wb-root .side.mini .nav-ic{display:inline}.xhs-wb-root .side.mini .side-foot{display:none}/* 内容栏：宽度上限 --content（跟随视口伸缩），在剩余空间里居中
+   —— 顶部模式下导航条内容按同一个公式缩进，两者才会对齐
+   ⚠️ width:100% 同样不能省：顶部模式下 .shell 是 flex column，
+   只有 auto margin 而没有明确宽度时，宽度会塌成内容宽（壁纸那条就是被这个坑掉的） */
+.xhs-wb-root .main{flex:1;min-width:0;width:100%;max-width:var(--content);margin-inline:auto;padding:32px var(--pad-x) 60px}/* ── 导航位置：顶部模式（必须写在 .side.mini 之后，靠顺序覆盖同特异性的折叠规则） ── */
+.xhs-wb-root .shell.top{flex-direction:column}.xhs-wb-root .shell.top .side{
+  flex:none;width:auto;height:auto;position:static;
+  flex-direction:row;flex-wrap:wrap;align-items:center;gap:4px;
+  border-right:0;border-bottom:1px solid var(--line);
+  /* 导航条「内容」与下方内容区对齐：--pad-x 是内容区自己的内边距，
+     再加上内容栏在剩余空间里居中的那部分留白 —— 两端就和下面的文字起点齐。
+     背景带仍然满宽（顶栏该有的样子），缩进的只是里面的内容。 */
+  padding:0 calc(var(--pad-x) + max(0px,(100% - var(--content)) / 2));
+}.xhs-wb-root .shell.top .side-toggle{display:none}.xhs-wb-root .shell.top .side-head{margin:0 14px 0 0;padding:0}.xhs-wb-root .shell.top .side-foot{
+  margin:0 0 0 auto;padding:0;border-top:0;
+  display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+}.xhs-wb-root .shell.top .sf-acct,.xhs-wb-root .shell.top .sf-day{margin:0}.xhs-wb-root .shell.top .dep-list{
+  flex-direction:row;align-items:center;gap:11px;
+  margin:0;padding:0 0 0 12px;border-top:0;border-left:1px solid var(--line);
+}.xhs-wb-root .shell.top .dep-list .dep-t{padding-left:11px;border-left:1px solid var(--line);margin:0}.xhs-wb-root .shell.top .side.mini .nav{padding:9px 13px}.xhs-wb-root .shell.top .side.mini .nav-tx{display:inline}.xhs-wb-root .shell.top .side.mini .nav-ic{display:none}.xhs-wb-root .shell.top .side.mini .side-foot{display:flex}/* ── 壁纸横幅（现为渐变占位；真实插件里是任意图片） ──
+   ⚠️ width:100% 不能省：顶部模式下它被搬进 .shell（flex 容器），
+   而 flex item 一旦有 margin-inline:auto 就**不再 stretch**，宽度会塌成"内容宽度"；
+   而壁纸里只有一个绝对定位的按钮 → 内容宽 = 0 → 整条壁纸变成看不见的 0px 细线 */
+.xhs-wb-root .wall{height:150px;width:100%;border-radius:var(--r-card);position:relative;overflow:hidden;
+  background:linear-gradient(125deg,#0f76c4 0%,#1e8ad0 48%,#5cb8e6 100%);
+  transition:background .35s ease}.xhs-wb-root .main > .wall{margin-bottom:22px}/* 顶部模式：壁纸搬到导航条之上（JS 挪节点），外边距自带。
+   下面两处 + .head 的 margin-bottom 全部取 22px —— 三者只要不等，搜索框看上去就不居中 */
+/* 顶部模式：壁纸横幅与内容区同宽、同位置（都在「内容栏」里居中） */
+.xhs-wb-root .shell.top > .wall{max-width:calc(var(--content) - var(--pad-x) * 2);margin:26px auto 22px}/* 与 .main 内容区同宽：main 盒子限宽 --content 后还内缩 --pad-x，横幅不同缩就会比卡片行宽 2×pad-x */.xhs-wb-root .shell.top .main{padding-top:22px}.xhs-wb-root .wall-btn{position:absolute;top:12px;right:12px;font:inherit;font-size:12px;font-weight:600;
+  padding:6px 12px;border:0;border-radius:7px;cursor:pointer;
+  background:rgba(255,255,255,.92);color:#15181d;
+  opacity:0;transition:opacity .18s ease}.xhs-wb-root .wall:hover .wall-btn,.xhs-wb-root .wall-btn:focus-visible{opacity:1}/* ═══ 壁纸「整页」模式（body.wall-full）—— 参考图 15/18 的做法 ═══
+   横幅变成固定满屏背景层；侧栏与内容区改为半透明磨砂浮在壁上。
+   卡片的实际不透明度 = 叠乘（.70 上再叠 .62 ≈ .87），保证文字对比度足够。 */
+.xhs-wb-root.wall-full{background:transparent;--ink-3:#5c6370}/* wall 在三种父级下都要满屏 —— 顶部模式时它被搬进 .shell，原本的 margin 会把背景挤出一圈缝 */
+.xhs-wb-root.wall-full .shell > .wall,.xhs-wb-root.wall-full .main > .wall,.xhs-wb-root.wall-full .shell.top > .wall{
+  position:fixed;inset:0;width:auto;height:auto;border-radius:0;margin:0;z-index:-1;
+  /* 必须清掉 max-width：绝对定位元素即使 left/right 都为 0，max-width 仍会把宽度截住，
+     壁纸就只铺满一部分（左边一条），看着像"背景没铺到边" */
+  max-width:none;
+}.xhs-wb-root.wall-full .wall::after{content:'';position:absolute;inset:0;background:rgba(255,255,255,.28)}.xhs-wb-root.wall-full .wall-btn{position:fixed;top:16px;right:22px;z-index:50}.xhs-wb-root.wall-full .side{background:rgba(255,255,255,.76);backdrop-filter:blur(14px)}.xhs-wb-root.wall-full .main{
+  background:rgba(255,255,255,.70);backdrop-filter:blur(16px);
+  border-radius:16px;margin:16px auto;
+}/* 顶部模式：内容区与导航条连成一体（上边距归零），左右依旧居中 */
+.xhs-wb-root.wall-full .shell.top .main{margin:0 auto;border-radius:0}/* 顶部模式：导航条必须与内容区用「同一个」半透明值，并去掉那条分隔线
+   —— 否则两块叠在同一张壁纸上却深浅不同，看上去就是拼接的 */
+.xhs-wb-root.wall-full .shell.top .side{border-bottom:0;background:rgba(255,255,255,.70)}.xhs-wb-root.wall-full .blk,.xhs-wb-root.wall-full .met{
+  background:rgba(255,255,255,.62);border-color:rgba(255,255,255,.5);
+}.xhs-wb-root.wall-full .met{background:rgba(255,255,255,.5)}/* 🔴 hero 是深色锚点卡，绝不能被上面那条 .met 半透明规则盖掉
+   —— 盖掉之后白字会落在浅底上，直接读不了 */
+.xhs-wb-root.wall-full .met.hero{background:linear-gradient(135deg,var(--brand),var(--brand-deep))}.xhs-wb-root.wall-full .search-in{background:rgba(255,255,255,.92)}.xhs-wb-root.wall-full .srcbar,.xhs-wb-root.wall-full .metainfo{background:rgba(255,255,255,.55)}/* ⚠️ 整页壁纸模式调浅药丸底纹 —— **改覆盖"变量"，不要覆盖"属性"**。
+   之前写的是 `body.wall-full .pill{...}`：特异性 (0,2,1) 压过 `.pill.acc`(0,2,0)，
+   于是把 .acc/.wr **以及后加的 .sel** 一起洗成灰 —— 第三次踩这个坑了。
+   这次 `.sel`（实心主色+白字）底色被洗成浅灰 → **白字直接看不见**（老哥 09-28 10:46：「不清晰，看不清楚」）。
+   改成在 body.wall-full 里覆盖 token：具体变体各自按变量取值，互不压制。 */
+.xhs-wb-root.wall-full{--tier-plain-bg:rgba(229,233,238,.88)}/* ── 标题区 ── */
+.xhs-wb-root .head{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px;gap:16px}/* 顶栏左：搜索框（替代原来的大标题「工作台」+ 副标题，腾出垂直空间） */
+.xhs-wb-root .search{position:relative;display:flex;align-items:center;width:400px;max-width:54%}.xhs-wb-root .search-ic{position:absolute;left:13px;width:14px;height:14px;color:var(--ink-3);pointer-events:none}.xhs-wb-root .search-in{width:100%;font:inherit;font-size:13px;padding:9px 14px 9px 36px;
+  border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--ink);outline:none}.xhs-wb-root .search-in::placeholder{color:var(--ink-3)}.xhs-wb-root .search-in:focus{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}/* 搜索结果面板（全库搜索 · 顶部按类型筛选） */
+.xhs-wb-root .search-panel{
+  position:absolute;left:0;top:calc(100% + 8px);width:500px;z-index:40;
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r-card);
+  box-shadow:0 12px 32px rgba(15,23,42,.12);padding:11px 11px 7px;
+  max-height:430px;overflow-y:auto;
+}.xhs-wb-root .sr-filters{display:flex;gap:6px;padding-bottom:11px;border-bottom:1px solid var(--line-soft)}.xhs-wb-root .sr-f{width:32px;height:32px;border:0;border-radius:8px;background:#f5f6f8;color:var(--ink-2);
+  cursor:pointer;display:flex;align-items:center;justify-content:center;flex:0 0 auto}.xhs-wb-root .sr-f:hover{color:var(--brand-text)}.xhs-wb-root .sr-f.on{background:var(--brand);color:#fff}.xhs-wb-root .sr-item{display:flex;align-items:center;gap:11px;padding:9px 8px;border-radius:8px;cursor:pointer}.xhs-wb-root .sr-item:hover{background:#f5f6f8}.xhs-wb-root .sr-ic{width:28px;height:28px;border-radius:7px;background:#f0f2f5;color:var(--ink-3);
+  display:flex;align-items:center;justify-content:center;flex:0 0 auto}.xhs-wb-root .sr-tx{min-width:0;flex:1}.xhs-wb-root .sr-t{display:block;font-size:13px;font-weight:600;color:var(--ink);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.xhs-wb-root .sr-s{display:block;font-size:11.5px;color:var(--ink-3);margin-top:2px;font-weight:500;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.xhs-wb-root .h1{font-size:26px;font-weight:600;letter-spacing:-.022em;line-height:1.2}.xhs-wb-root .h1s{font-size:13px;color:var(--ink-2);margin-top:6px}.xhs-wb-root .head-r{display:flex;flex-direction:column;align-items:flex-end;gap:9px;position:relative}.xhs-wb-root .head-top{display:flex;align-items:center;gap:10px}/* §18.7 依赖状态：首页右上角一行，极小 */
+.xhs-wb-root .dep{display:flex;align-items:center;gap:11px;font-size:11px;font-weight:500;color:var(--ink-3)}.xhs-wb-root .dep-i{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.xhs-wb-root .dep-i .d{width:5px;height:5px;border-radius:50%;background:#22a06b;flex:0 0 auto}.xhs-wb-root .dep-i .d.wr{background:#d97706}.xhs-wb-root .dep-t{padding-left:11px;border-left:1px solid var(--line)}.xhs-wb-root .date{font-size:12px;color:var(--ink-3);font-weight:500}/* ⑩ 布局面板：位置槽 ＋ 候选池（候选来自结构文档，共 13 个） */
+.xhs-wb-root .layout-pop{
+  position:absolute;right:0;top:calc(100% + 10px);width:338px;z-index:30;
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r-card);
+  padding:14px 16px 12px;box-shadow:0 10px 28px rgba(15,23,42,.10);
+  max-height:calc(100vh - 150px);overflow-y:auto;
+}.xhs-wb-root .lp-t{font-size:11.5px;font-weight:600;color:var(--ink-3);letter-spacing:.03em;margin-bottom:8px}.xhs-wb-root .lp-t.mt{margin-top:15px}.xhs-wb-root .lp-now{display:flex;flex-direction:column;gap:2px}.xhs-wb-root .lp-item{display:flex;align-items:center;justify-content:space-between;
+  font-size:12.5px;color:var(--ink-2);padding:6px 9px;border-radius:6px;background:#fafbfc;font-weight:500}.xhs-wb-root .lp-swap{font:inherit;font-size:11px;font-weight:500;color:var(--brand-text);
+  background:none;border:0;cursor:pointer;padding:2px 7px;border-radius:5px}.xhs-wb-root .lp-swap:hover{background:var(--brand-soft)}.xhs-wb-root .lp-pool{display:flex;flex-wrap:wrap;gap:6px}.xhs-wb-root .pool{font:inherit;font-size:11.5px;font-weight:500;color:var(--ink-2);cursor:pointer;
+  background:#fff;border:1px solid var(--line);border-radius:7px;padding:5px 9px;
+  display:inline-flex;align-items:center;gap:5px}.xhs-wb-root .pool:hover{border-color:var(--brand);color:var(--brand-text);background:var(--brand-soft)}.xhs-wb-root .pool i{font-style:normal;font-size:10px;color:var(--ink-3);background:#f2f3f5;padding:1px 5px;border-radius:4px}.xhs-wb-root .pool:hover i{background:#fff}/* 导航位置切换 */
+.xhs-wb-root .seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}.xhs-wb-root .seg-b{font:inherit;font-size:12px;font-weight:500;padding:5px 15px;border:0;background:var(--card);
+  color:var(--ink-2);cursor:pointer}.xhs-wb-root .seg-b.on{background:var(--brand);color:#fff;font-weight:600}/* 「收录目录」面板（知识库页）—— 决定哪些文件夹的文件进知识索引。
+   老哥 09-28 11:39 提的：结构文档 §十八 只写了"读文件聚合"，从没定义收录范围。
+   所以插件必须有一个可增删的目录白名单，不能靠插件猜。 */
+.xhs-wb-root .inc-pop{position:absolute;right:0;top:calc(100% + 10px);width:300px;z-index:30;text-align:left;
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r-card);
+  padding:14px 16px;box-shadow:0 10px 28px rgba(15,23,42,.10)}.xhs-wb-root .inc-row{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--ink-2);
+  padding:5px 0;font-weight:500;cursor:pointer}.xhs-wb-root .inc-row input{accent-color:var(--brand);width:14px;height:14px;flex:0 0 auto}.xhs-wb-root .inc-row .inc-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.xhs-wb-root .inc-row .inc-n{font-size:11px;color:var(--ink-3);font-variant-numeric:tabular-nums}.xhs-wb-root .inc-add{display:block;width:100%;margin-top:8px;font:inherit;font-size:12px;font-weight:500;
+  color:var(--brand-text);background:var(--brand-soft);border:0;border-radius:7px;
+  padding:7px 0;cursor:pointer;text-align:center}.xhs-wb-root .inc-add:hover{background:#d3e6f9}.xhs-wb-root .inc-fixed{display:flex;flex-wrap:wrap;gap:6px}.xhs-wb-root .inc-fixed span{font-size:11px;color:var(--ink-3);background:#f2f3f5;border-radius:6px;
+  padding:3px 8px;font-weight:500}/* 知识索引 ·「被引用 → 更新时间」的间距（老哥 11:51：「这两个又是贴在一起的」）。
+   🔴 两列现在都是右对齐（原来一个右一个左），但**右对齐时给后一列加左内边距没用** ——
+      文字贴的是列右端，左 padding 全被吃掉。所以要给**前一列加右内边距**，把数字往左推。 */
+.xhs-wb-root #k-know .tb th:nth-child(6),.xhs-wb-root #k-know .tb td:nth-child(6){padding-right:30px}/* 「改状态」浮层（知识库页）—— fixed 定位，跟着被点的按钮走（JS 算位置） */
+.xhs-wb-root .st-pop{position:fixed;z-index:60;width:322px;
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r-card);
+  padding:15px 17px;box-shadow:0 12px 32px rgba(15,23,42,.16);text-align:left}.xhs-wb-root .st-h{font-size:12.5px;font-weight:600;color:var(--ink);margin-bottom:3px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.xhs-wb-root .st-path{font-size:11px;color:var(--ink-3);font-weight:500;display:block;margin-bottom:12px}.xhs-wb-root .st-cur{font-size:12.5px;color:var(--ink);background:#f5f6f8;border-radius:8px;
+  padding:8px 12px;font-weight:500}.xhs-wb-root .st-cur .mut{color:var(--ink-3)}.xhs-wb-root .st-opts{display:flex;flex-direction:column;gap:7px}.xhs-wb-root .st-opt{display:flex;align-items:baseline;gap:9px;font:inherit;font-size:12.5px;
+  color:var(--ink);background:#f7f8fa;border:1px solid var(--line-soft);
+  border-radius:8px;padding:8px 12px;cursor:pointer;text-align:left}.xhs-wb-root .st-opt:hover{border-color:var(--brand);background:var(--brand-soft)}.xhs-wb-root .st-opt i{font-style:normal;font-size:11px;color:var(--ink-3);font-weight:500}/* 面板要能绝对定位在按钮下方 —— .grp 需要定位上下文（只给带面板的那处加） */
+.xhs-wb-root .bh .grp.haspop{position:relative}.xhs-wb-root .lp-hint{margin-top:12px;padding-top:10px;border-top:1px solid var(--line-soft);
+  font-size:11.5px;color:var(--ink-3);line-height:1.6}/* 设置面板（齿轮点开） */
+.xhs-wb-root .settings-pop{
+  position:absolute;right:0;top:calc(100% + 10px);width:266px;z-index:31;
+  background:var(--card);border:1px solid var(--line);border-radius:var(--r-card);
+  padding:14px 16px 13px;box-shadow:0 10px 28px rgba(15,23,42,.10);
+}.xhs-wb-root .sp-in{width:100%;font:inherit;font-size:12.5px;padding:7px 11px;margin-top:2px;
+  border:1px solid var(--line);border-radius:7px;background:var(--card);color:var(--ink);outline:none}.xhs-wb-root .sp-in:focus{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}/* ── 指标卡 ── */
+.xhs-wb-root .mrow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:30px}/* 指标卡：浅灰底、无边框（参考图 3 的做法 —— 凹陷式，与浮起的白卡区分层级） */
+.xhs-wb-root .met{background:#f5f6f8;border:0;border-radius:var(--r-card);padding:18px 20px 16px}.xhs-wb-root .met .k{font-size:12px;color:var(--ink-3);font-weight:500}.xhs-wb-root .met .v{font-size:34px;font-weight:600;letter-spacing:-.032em;line-height:1.08;margin:10px 0 3px}.xhs-wb-root .met .d{font-size:12px;color:var(--ink-3);font-weight:500}.xhs-wb-root .met.hero{background:linear-gradient(135deg,var(--brand),var(--brand-deep));border-color:transparent}.xhs-wb-root .met.hero .k{color:rgba(255,255,255,.84)}.xhs-wb-root .met.hero .v{color:#fff}.xhs-wb-root .met.hero .d{color:rgba(255,255,255,.84)}.xhs-wb-root .met.alert .v{font-size:19px;font-weight:600;color:var(--warn);padding:10px 0 2px;letter-spacing:0}/* ── 三栏 ── */
+.xhs-wb-root .cols{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1fr) minmax(0,1.1fr);gap:14px;margin-bottom:30px}/* 页面级纵向节奏：**相邻一级块之间统一 18px**
+   ⚠️ 原来 .blk 的上下 margin 都是 0 → 一级块之间**完全没有间距**：
+   相邻两张卡片直接贴在一起（只剩 0 间距 + 圆角 + 1px 边框，看着像一整块）；
+   概览条更明显 —— 它自己写了 margin-bottom:18px，于是变成"贴上、离下 18"，
+   **上下留白不等 = 看上去不居中**（老哥 09-27 17:24：「最根本的问题就是没有居中」）。
+   用兄弟 margin 而不是 flex gap：margin 会**相邻合并取大值**，
+   各块原来自己的间距不会翻倍，缺间距的地方自动补成 18。 */
+.xhs-wb-root .page > * + *{margin-top:18px}.xhs-wb-root .blk{background:var(--card);border:1px solid var(--line);border-radius:var(--r-card);padding:18px 20px}/* 三栏内容纵向铺满 + 按钮统一贴底对齐 */
+.xhs-wb-root .cols .blk{display:flex;flex-direction:column}.xhs-wb-root .sp{flex:1 1 auto;min-height:14px}.xhs-wb-root .cols .blk .btn.full{margin-top:0}.xhs-wb-root .bt{font-size:13.5px;font-weight:600;letter-spacing:-.005em}.xhs-wb-root .bh{display:flex;align-items:center;justify-content:space-between;margin-bottom:15px}.xhs-wb-root .bh .grp{display:flex;align-items:center;gap:6px;flex:0 0 auto}/* 行头左侧组：标题 + 紧跟其后的筛选控件（09-28 11:21 老哥：筛选往前放、贴着标题）。
+   右侧 .grp 留给"切换类"按钮 —— 两者语义不同，所以分居左右、不强凑一组。 */
+.xhs-wb-root .bh-l{display:flex;align-items:center;gap:11px;min-width:0}.xhs-wb-root .bh-l .bt{margin:0}.xhs-wb-root .swp{font:inherit;font-size:11px;font-weight:500;color:var(--ink-3);background:none;border:0;
+  cursor:pointer;padding:2px 7px;border-radius:5px;flex:0 0 auto}.xhs-wb-root .swp:hover{color:var(--brand-text);background:var(--brand-soft)}.xhs-wb-root .bh .r{font-size:11.5px;color:var(--ink-3);font-weight:500}/* 标题行右侧：说明文字 + 操作按钮（两张表都要能跳 duowei 编辑） */
+.xhs-wb-root .bhr{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end}/* 当前路线图：横向 30 格（原「30 天进度」圆环版框大内容空，重设计） */
+.xhs-wb-root .daywrap{flex:1;display:flex;flex-direction:column;justify-content:center;gap:12px;padding-bottom:2px}.xhs-wb-root .dayhead{display:flex;align-items:baseline;gap:6px}.xhs-wb-root .daynum{font-size:30px;font-weight:600;letter-spacing:-.03em;line-height:1}.xhs-wb-root .dayof{font-size:13px;color:var(--ink-3);font-weight:500}.xhs-wb-root .dayrest{margin-left:auto;font-size:11.5px;color:var(--ink-3);font-weight:500}.xhs-wb-root .dayrest b{color:var(--ink-2);font-weight:600}.xhs-wb-root .days{display:flex;gap:2px;flex:1;min-height:30px;max-height:74px}.xhs-wb-root .days i{flex:1;border-radius:3px;background:#e9ebee;display:block}.xhs-wb-root .days i.on{background:var(--brand)}.xhs-wb-root .days i.today{background:rgba(15,118,196,.34)}.xhs-wb-root .dayscale{display:flex;justify-content:space-between;font-size:11px;color:var(--ink-3);font-weight:500}.xhs-wb-root .ring{display:flex;align-items:center;gap:20px}.xhs-wb-root .lg{font-size:12px;color:var(--ink-2);display:flex;align-items:center;gap:7px;font-weight:500}.xhs-wb-root .lg i{width:8px;height:8px;border-radius:50%;display:inline-block;flex:0 0 auto}.xhs-wb-root .row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line-soft)}.xhs-wb-root .row:last-child{border-bottom:0;padding-bottom:0}.xhs-wb-root .row .d1{font-size:11.5px;color:var(--ink-3);width:40px;flex:0 0 auto;font-weight:500}.xhs-wb-root .row .tt{flex:1;font-size:13px}/* ── 药丸 ── */
+/* ⚠️ 三档药丸：**必须同时在"明度"上分层**，只换色相没用。
+   老哥 09-28 10:15：「三档定义看起来不明显，很容易看漏」。
+   实测老配色三档底色的**亮度比只有 1.008 / 1.047 / 1.038** —— 几乎全等，
+   所以灰度下完全分不出（旧值 #f2f3f5 / #e7f4fd / #fef6ee 都是"接近白"）。
+   新配色按明度排：**属性最浅 → 数量居中 → 需处理最深**，两两亮度比 1.118 / 1.237 / 1.106。
+   字号 11.5→12、字重 500→600、圆点 5→6px（原来"太虚、容易看漏"）。 */
+/* 09-28 10:26 老哥再反馈"还是不太明显"（圈了计数药丸／属性药丸／选中分段按钮）：
+   ① 底色再加深一档；② **加 1px 同色系描边** —— 浅底在白卡上是"发飘"的，有边才站得住。
+   实测：字对比 8.85 / 5.71 / 5.94，药丸 vs 白卡 1.22 / 1.38 / 1.53，三档明度两两 ≥1.13。 */
+.xhs-wb-root .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:3px 11px;border-radius:999px;
+  background:var(--tier-plain-bg);color:var(--tier-plain-fg);white-space:nowrap;font-weight:600;
+  border:1px solid var(--tier-plain-bd)}.xhs-wb-root .pill i{width:7px;height:7px;border-radius:50%;background:currentColor;flex:0 0 auto}.xhs-wb-root .pill.acc{background:var(--tier-acc-bg);color:var(--tier-acc-fg);border-color:var(--tier-acc-bd)}/* 数量 */
+.xhs-wb-root .pill.wr{background:var(--tier-wr-bg);color:var(--tier-wr-fg);border-color:var(--tier-wr-bd)}/* 需处理 */
+/* ── 按钮 ── */
+.xhs-wb-root .btn{font:inherit;font-size:12px;font-weight:500;padding:6px 14px;border-radius:var(--r-btn);cursor:pointer;
+  border:1px solid var(--line);background:var(--card);color:var(--ink-2)}.xhs-wb-root .btn.pri{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}.xhs-wb-root .btn.ic{width:31px;height:31px;padding:0;flex:0 0 auto;
+  display:inline-flex;align-items:center;justify-content:center}.xhs-wb-root .btn.ic:hover{color:var(--brand);border-color:var(--brand)}.xhs-wb-root .lnk{font:inherit;font-size:12px;font-weight:600;color:var(--brand-text);
+  background:none;border:0;cursor:pointer;padding:0}.xhs-wb-root .lnk:hover{text-decoration:underline}.xhs-wb-root .btn.full{width:100%;padding:9px 0;margin-top:14px}/* ── 表格 ── */
+.xhs-wb-root .tb{width:100%;border-collapse:collapse;table-layout:fixed}/* 最后一列（通常是"备注"）加左内边距 —— 否则上一列右对齐 + 它左对齐会挤成一片 */
+.xhs-wb-root .tb th:last-child,.xhs-wb-root .tb td:last-child{padding-left:14px}/* 横向条形排行（参考图 13「收藏表现」：标题左 · 条 · 数值最右） */
+.xhs-wb-root .rank{display:flex;flex-direction:column;gap:10px}.xhs-wb-root .rk{display:grid;grid-template-columns:minmax(0,1fr) minmax(90px,170px) 56px;align-items:center;gap:14px}.xhs-wb-root .rk-t{font-size:12.5px;font-weight:500;color:var(--ink-2);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.xhs-wb-root .rk-bar{height:6px;border-radius:3px;background:#eceef1;overflow:hidden}.xhs-wb-root .rk-bar i{display:block;height:100%;border-radius:3px;background:var(--brand)}.xhs-wb-root .rk-v{font-size:12.5px;font-weight:600;text-align:right;color:var(--ink)}.xhs-wb-root .rk-v.dash{color:var(--ink-3);font-weight:500}.xhs-wb-root .bh .grp{align-self:center}.xhs-wb-root .tb th{font-size:11.5px;font-weight:600;color:var(--ink-3);text-align:left;padding:0 0 11px;
+  border-bottom:1px solid var(--line);white-space:nowrap;letter-spacing:.02em}.xhs-wb-root .tb td{padding:13px 0;border-bottom:1px solid var(--line-soft);vertical-align:middle;white-space:nowrap}.xhs-wb-root .tb tr:last-child td{border-bottom:0;padding-bottom:2px}.xhs-wb-root .tb .r{text-align:right}/* 数值列右边紧跟"非数值列"时必须留一道沟 ——
+   表格横向 padding 是 0，列只靠列宽分开，所以**右对齐的数字必然贴住后一列**。
+   老哥 09-28 10:19：创作台笔记卡列表的「评」「状态」粘在一起（表头读起来像"评状态"）；
+   09-27 21:39 选品池也报过同一类问题 —— 那次是单独修的，这次写成通用规则，防复发。
+   40px 照这几张表的自有节奏取（该表数值列之间本来就 32px）。
+   选品池那两张表另有 56px 的更强规则（`#p-pick …`，特异性更高），不受影响。 */
+.xhs-wb-root .tb th.r + th:not(.r),.xhs-wb-root .tb td.r + td:not(.r){padding-left:40px}.xhs-wb-root .tb .cc{text-align:center}.xhs-wb-root .tb .tcell{white-space:normal;padding-right:16px}.xhs-wb-root .t-title{font-size:13px;font-weight:500}/* 品名可点 → 打开该条记录（老哥 09-28 定：要编辑的是某一条，不是整表）。
+   原型跳不了 duowei，所以点一下给个明确反馈；真插件里这里直接打开该条。 */
+.xhs-wb-root .t-title.link{cursor:pointer;transition:color .15s ease}.xhs-wb-root .t-title.link:hover{color:var(--brand-text);text-decoration:underline;text-underline-offset:2px}.xhs-wb-root .toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);z-index:60;
+  background:#15181c;color:#fff;font-size:12px;font-weight:500;padding:9px 16px;border-radius:8px;
+  box-shadow:0 8px 24px rgba(15,23,42,.22)}.xhs-wb-root .toast[hidden]{display:none}.xhs-wb-root .t-sub{font-size:11.5px;color:var(--ink-3);margin-top:3px;font-weight:500}.xhs-wb-root .mut{font-size:12.5px;color:var(--ink-2)}.xhs-wb-root .dash{color:var(--ink-3);opacity:.6}.xhs-wb-root .pname{font-size:15px;font-weight:600;margin:2px 0 10px;letter-spacing:-.01em}.xhs-wb-root .kv{font-size:12.5px;color:var(--ink-2);line-height:1.9;font-weight:500}.xhs-wb-root .tail{margin-top:24px;font-size:12px;color:var(--ink-3);text-align:center;font-weight:500}/* ═══ 多页签共用 ═══ */
+.xhs-wb-root .page[hidden]{display:none}/* 顶部常驻条（采集入口） */
+.xhs-wb-root .bar{display:flex;align-items:center;gap:14px;margin-bottom:22px}.xhs-wb-root .bar .bt{flex:0 0 auto}.xhs-wb-root .bar .r{flex:0 0 auto;font-size:11.5px;color:var(--ink-3);font-weight:500}.xhs-wb-root .ipt{font:inherit;font-size:13px;padding:9px 13px;border:1px solid var(--line);border-radius:9px;
+  background:var(--card);color:var(--ink);outline:none;min-width:0;flex:1}.xhs-wb-root .ipt::placeholder{color:var(--ink-3)}.xhs-wb-root .ipt:focus{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}/* 页内子页签 */
+/* 子页签行：右侧挂「数据窗口」说明（线稿口径：窗口写在子页签行右侧，省掉单独一行） */
+.xhs-wb-root .subtabs{display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-bottom:18px}.xhs-wb-root .meta-r{margin-left:auto;font-size:11.5px;color:var(--ink-3);font-weight:500}/* 可选药丸（选中 = 实心主色 + 白字，与全稿"选中态"规则一致）。
+   当前账号切换用的是 <select class="acc-sel">（一个号时更省地方），这个类是给
+   "多号改用药丸横排"时备的 —— 届时直接套用，不必再想选中态怎么画。 */
+.xhs-wb-root .pill.sel{background:var(--brand);color:#fff;border-color:var(--brand)}/* 状态卡里的账号行：紧凑一行 —— 「账号 选择器 · 说明」。
+   原来账号是**单独一张卡**（一整行只有两个药丸 + 一句右对齐说明，中间空一大片），
+   老哥 09-28 10:46：「没必要占这么大的位置」。 */
+.xhs-wb-root .sb-acc{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:10px;
+  padding-top:10px;border-top:1px solid var(--line-soft);font-size:12px;color:var(--ink-3);font-weight:500}.xhs-wb-root .acc-sel{font:inherit;font-size:12px;font-weight:500;color:var(--ink);cursor:pointer;
+  background:var(--card);border:1px solid var(--line);border-radius:7px;padding:4px 8px;max-width:320px}.xhs-wb-root .acc-sel:hover{border-color:var(--brand)}/* 指标卡里的「近 7 天」迷你趋势 —— 由 creator-stats 的逐日 7 个值驱动；
+   现在测试号全为 0，所以是 7 根 2px 的平条（**是 0，不是没采到**） */
+.xhs-wb-root .sp7{display:flex;align-items:flex-end;gap:2px;height:14px;margin:7px 0 5px}.xhs-wb-root .sp7 i{flex:1;height:2px;background:var(--tier-acc-bd);border-radius:2px}.xhs-wb-root .kt{font-size:11px;color:var(--ink-3);font-weight:500}.xhs-wb-root .subtab{font:inherit;font-size:12.5px;font-weight:500;color:var(--ink-2);padding:7px 14px;
+  border-radius:8px;cursor:pointer;background:none;border:0}/* 选中态统一：**实心主色 + 白字**。全稿 4 处选中态里 .nav.on / .seg-b.on / .sr-f.on
+   本来就是实心主色，只有 .subtab.on 是浅蓝底 → 4 处不一致，而且浅蓝底在白卡/壁纸上都"不明显"
+   （老哥 09-28 10:26 圈了「变动才采」「全部」「观看」）。白字 on 主色 = 4.76:1 ✅ */
+.xhs-wb-root .subtab.on{background:var(--brand);color:#fff;font-weight:600}.xhs-wb-root .subpage[hidden]{display:none}/* 两列 / 表单 */
+.xhs-wb-root .cols2{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:14px;margin-bottom:22px}.xhs-wb-root .cols2 .blk{display:flex;flex-direction:column}.xhs-wb-root .frow{display:grid;grid-template-columns:auto minmax(0,1fr) auto minmax(0,1fr);
+  align-items:center;gap:11px 12px;margin-bottom:14px}.xhs-wb-root .frow label{font-size:12px;color:var(--ink-3);font-weight:500}.xhs-wb-root .sel,.xhs-wb-root .frow .ipt{width:100%;min-width:0;font-size:12.5px;padding:7px 10px;border-radius:8px;
+  text-overflow:ellipsis;overflow:hidden;white-space:nowrap}.xhs-wb-root .sel{font-family:inherit;border:1px solid var(--line);background:var(--card);color:var(--ink);outline:none}.xhs-wb-root .sel:focus{border-color:var(--brand)}.xhs-wb-root .five{display:flex;flex-direction:column;gap:7px;margin-bottom:4px}.xhs-wb-root .f5{display:flex;align-items:center;gap:9px}.xhs-wb-root .f5 .n{flex:0 0 auto;width:18px;height:18px;border-radius:50%;background:var(--brand-soft);
+  color:var(--brand-text);font-size:10.5px;font-weight:600;display:flex;align-items:center;justify-content:center}.xhs-wb-root .f5 .k{flex:0 0 96px;font-size:12px;color:var(--ink-2);font-weight:500}.xhs-wb-root .f5 .ipt{padding:6px 10px;font-size:12px;border-radius:7px}/* 卡片网格 —— 紧凑版：不再做"假装有封面图"的空位（老哥 09-27：没配图就别占那么大地方），
+   序号与状态并进元信息行 */
+.xhs-wb-root .cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.xhs-wb-root .card{border:1px solid var(--line);border-radius:12px;background:var(--card);
+  display:flex;flex-direction:column;transition:border-color .15s ease,box-shadow .15s ease}.xhs-wb-root .card:hover{border-color:#cfd6e0;box-shadow:0 4px 14px rgba(15,23,42,.06)}.xhs-wb-root .card .cbody{padding:14px 15px 15px;display:flex;flex-direction:column;flex:1}.xhs-wb-root .card .ct{font-size:13.5px;font-weight:600;line-height:1.5;margin-bottom:7px;letter-spacing:-.005em}.xhs-wb-root .card .cs{font-size:11.5px;color:var(--ink-3);font-weight:500;margin-bottom:12px}.xhs-wb-root .card .cf{margin-top:auto;display:flex;align-items:center;gap:8px}.xhs-wb-root .card .cf .rr{margin-left:auto}/* ═══ 笔记卡弹窗（结构文档 §17.2：点「打开」弹窗作业面，不跳文件）═══
+   内容 = ① 标题 + 归属 ② 状态分段按钮组 ③ 复制四块 ④ 数据区 ＋ 「打开源文件」出口 */
+/* 遮罩色直接放 .modal 自己身上：少一个子元素、少一次定位，比"子元素做全屏遮罩"更稳 */
+.xhs-wb-root .modal{position:fixed;inset:0;z-index:80;display:flex;justify-content:center;
+  align-items:flex-start;padding:34px 20px 34px;overflow:auto;
+  background:rgba(15,23,42,.42)}.xhs-wb-root .modal[hidden]{display:none}/* 弹窗限高并竖直 flex：溢出交给 .m-body 滚，避免"框内滚 + 整页滚"两层 */
+.xhs-wb-root .modal-box{position:relative;width:100%;max-width:680px;background:var(--card);
+  border-radius:14px;box-shadow:0 24px 64px rgba(15,23,42,.28);overflow:hidden;
+  max-height:calc(100vh - 68px);display:flex;flex-direction:column}.xhs-wb-root .m-head{flex:0 0 auto;display:flex;align-items:flex-start;gap:12px;padding:17px 20px 15px;
+  border-bottom:1px solid var(--line-soft)}.xhs-wb-root .m-head > div{flex:1;min-width:0}.xhs-wb-root .m-t{font-size:15px;font-weight:600;line-height:1.45;letter-spacing:-.01em}.xhs-wb-root .m-s{font-size:11.5px;color:var(--ink-3);font-weight:500;margin-top:4px}.xhs-wb-root .m-head .btn{flex:0 0 auto;padding:6px 13px}.xhs-wb-root .m-x{flex:0 0 auto;width:26px;height:26px;border:0;background:none;
+  color:var(--ink-3);cursor:pointer;font:inherit;font-size:15px;line-height:1;border-radius:6px}.xhs-wb-root .m-x:hover{background:#f2f3f5;color:var(--ink)}.xhs-wb-root .m-body{flex:1;min-height:0;overflow-y:auto;padding:16px 20px 20px}.xhs-wb-root .m-sec{margin-bottom:17px}/* 「分析详情」弹窗的美观调整（09-28 11:33 老哥「太难看了」）——
+   诊断：① 弹窗只有 720px，6 张卡被挤到 ~100px/张 → 标签换行、数字显小；
+        ② 卡内 padding 10px、标签与数字只隔 4px，发闷；
+        ③ 两行卡之间与卡间都是 13/10px，糊成一片；
+        ④ 底部出口区没样式（.m-foot/.m-note 从来没定义过）→ 和内容黏在一起。
+   取值：弹窗 880（参考图比例）、卡内 13×15、数字 20px、卡间 12px、页签下留白 19px。
+   全部用 #anModal 前缀限定 —— 不动共用的弹窗骨架（笔记卡弹窗仍按原样）。 */
+.xhs-wb-root #anModal{align-items:center;padding:40px 20px}.xhs-wb-root #anModal .modal-box{max-width:880px}.xhs-wb-root #anModal .m-head{padding:20px 24px 17px}.xhs-wb-root #anModal .m-t{font-size:17px}.xhs-wb-root #anModal .m-s{margin-top:5px;line-height:1.6}.xhs-wb-root .an-sub{font-size:13px;font-weight:600;color:var(--ink);margin-top:7px;line-height:1.45}.xhs-wb-root #anModal .m-body{padding:18px 24px 20px}.xhs-wb-root #anModal .subtabs{margin-bottom:19px}.xhs-wb-root #anModal .kpi6,.xhs-wb-root #anModal .kpi5{gap:12px;margin-bottom:12px}.xhs-wb-root #anModal .kpi{padding:13px 15px;border-radius:10px}.xhs-wb-root #anModal .kpi .k{font-size:11.5px;margin-bottom:7px}.xhs-wb-root #anModal .kpi .v{font-size:20px}.xhs-wb-root #anModal .tail{margin-top:0;text-align:left;font-size:11.5px;line-height:1.78}/* 弹窗底部出口区 —— 这条定义原本缺失，导致按钮与说明无边框、无底色地贴住正文 */
+.xhs-wb-root .m-foot{flex:0 0 auto;display:flex;align-items:center;gap:12px;
+  padding:14px 24px;border-top:1px solid var(--line-soft);background:#fafbfc}.xhs-wb-root .m-note{font-size:11.5px;color:var(--ink-3);font-weight:500;margin-left:auto}/* 「分析详情」弹窗里的小卡网格（沿用指标卡语言） */
+.xhs-wb-root .kpi4{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:10px}.xhs-wb-root .kpi4 .kc{background:#f7f8fa;border-radius:9px;padding:9px 12px}.xhs-wb-root .kpi4 .k{font-size:11px;color:var(--ink-3);font-weight:500;margin-bottom:3px}.xhs-wb-root .kpi4 .v{font-size:16px;font-weight:600;letter-spacing:-.01em}.xhs-wb-root .kpi4 .v.dash{color:var(--ink-3);font-weight:500}/* 「平台没给」的显式说明块 —— 不能显示成 0，也不能静默留空 */
+.xhs-wb-root .na{font-size:12px;color:var(--ink-2);background:#f7f8fa;border:1px dashed var(--line);
+  border-radius:9px;padding:10px 13px;line-height:1.62}.xhs-wb-root .na strong{font-weight:600}/* 缺口清单（接口没返回的那几项） */
+.xhs-wb-root .gap-l{display:flex;flex-wrap:wrap;gap:7px;margin:0;padding:0;list-style:none}.xhs-wb-root .gap-l li{font-size:11.5px;color:var(--ink-2);background:#f2f3f5;border-radius:6px;
+  padding:3px 9px;font-weight:500}.xhs-wb-root .m-lb{font-size:11.5px;font-weight:600;color:var(--ink-3);letter-spacing:.02em;margin-bottom:9px}.xhs-wb-root .m-lb em{font-style:normal;font-weight:500;margin-left:8px}/* 弹窗内两块：状态（三等分分段按钮组）/ 复制（**每块一行，值直接可读** ＋ 各一个复制按钮）
+   老哥 09-27 15:54 定：① 复制块要能看见内容（只给按钮等于不知道复制什么）
+   ② 正文与标签**合并成一块** ③ **数据区从弹窗移除**（1 级表格里已经有了，不重复） */
+.xhs-wb-root .m-rw{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:9px}.xhs-wb-root .m-rw .m-lb{margin:0}.xhs-wb-root .m-side{font-size:11.5px;color:var(--ink-3);font-weight:500}.xhs-wb-root .seg.wide{display:flex}.xhs-wb-root .seg.wide .seg-b{flex:1;padding:9px 0}.xhs-wb-root .m-copy{display:flex;flex-direction:column;gap:7px}/* 复制区：**每块一组，组内每行各一个复制按钮**（老哥 09-27 16:34 定：
+   标题 3 个候选 / 封面 2 个候选，都要「选哪个复制哪个」；标签独立成块；正文框加大） */
+.xhs-wb-root .cp-grp{display:flex;gap:10px;background:#f7f8fa;
+  border:1px solid var(--line-soft);border-radius:9px;padding:10px 11px}.xhs-wb-root .cp-grp + .cp-grp{margin-top:8px}/* 块名 = 彩色小标签（老哥 09-27 16:39：原来块名和内容都是灰字，"一点辨识度都没有"） */
+.xhs-wb-root .cp-grp > .cp-k{flex:0 0 62px;align-self:flex-start;
+  display:flex;align-items:center;justify-content:center;height:22px;
+  background:var(--brand-soft);color:var(--brand-text);
+  font-size:11px;font-weight:600;letter-spacing:.02em;border-radius:6px}.xhs-wb-root .cp-lines{flex:1;min-width:0;display:flex;flex-direction:column;gap:7px}.xhs-wb-root .cp-line{display:flex;align-items:flex-start;gap:10px}.xhs-wb-root .cp-line .tx{flex:1;min-width:0;font-size:12px;color:var(--ink);line-height:1.62;white-space:pre-line}/* 正文框（.tx.body）：**完全展开、不截断** —— 滚动交给弹窗内容区 .m-body（不加高度限制） */
+.xhs-wb-root .cp-line .btn{flex:0 0 auto;padding:3px 11px;font-size:11.5px}/* ═══ 选品池（测品）页 —— 按 09-25 线稿重做，平铺不分子页签 ═══ */
+/* 商品数据采集：说明 + 一行控件 */
+.xhs-wb-root .capnote{font-size:11.5px;color:var(--ink-3);font-weight:500;margin-bottom:11px}.xhs-wb-root .capblk{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:4px}.xhs-wb-root .capblk .ipt{flex:1;min-width:200px}.xhs-wb-root .capblk .grp{flex:0 0 auto}.xhs-wb-root .cap-lb{font-size:11.5px;color:var(--ink-3);font-weight:500;flex:0 0 auto}/* 概览条（原「状态栏」）
+   ⚠️ 改过两版都不对的原因：三组「标签 + 数字」是**裸文本**，飘在两张白卡之间，
+   没有任何承载物 —— 要么靠间距硬撑成三块、要么挤成一团，两头都不像话
+   （老哥 09-27 17:15：「越改越丑，丑出了天际」）。
+   改为**三枚浅灰 chip**，沿用页面已有的指标卡语言（同 .kpi 的底色）：
+   每组自成一体，不靠间距硬撑，也不用分隔符。 */
+.xhs-wb-root .statbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:18px}.xhs-wb-root .stat{display:inline-flex;align-items:baseline;gap:7px;background:#f5f6f8;
+  border-radius:10px;padding:8px 15px}.xhs-wb-root .stat .k{font-size:11.5px;color:var(--ink-3);font-weight:500}.xhs-wb-root .stat .n{font-size:16px;font-weight:600;letter-spacing:-.01em;color:var(--ink)}/* 在测品卡 */
+.xhs-wb-root .tc-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:15px}.xhs-wb-root .tc-name{font-size:17px;font-weight:600;letter-spacing:-.012em}.xhs-wb-root .tc-acts{margin-left:auto;display:flex;gap:8px}.xhs-wb-root .kpi6{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:10px;margin-bottom:13px}/* 「分析详情」弹窗第二行：5 张卡（涨粉/点赞/评论/收藏/分享）。窄屏降级成 3 列 */
+.xhs-wb-root .kpi5{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px;margin-bottom:13px}
+@media(max-width:900px){.xhs-wb-root .kpi6{grid-template-columns:repeat(3,minmax(0,1fr))}.xhs-wb-root .kpi5{grid-template-columns:repeat(3,minmax(0,1fr))}}.xhs-wb-root .kpi{background:#f5f6f8;border-radius:9px;padding:10px 12px}.xhs-wb-root .kpi .k{font-size:11px;color:var(--ink-3);font-weight:500;margin-bottom:4px}.xhs-wb-root .kpi .v{font-size:17px;font-weight:600;letter-spacing:-.015em}.xhs-wb-root .kpi .v.dash{color:var(--ink-3);font-weight:500}.xhs-wb-root[data-cw="sm"] .kpi6,.xhs-wb-root[data-cw="xs"] .kpi6{grid-template-columns:repeat(3,minmax(0,1fr))}.xhs-wb-root[data-cw="xs"] .kpi6{grid-template-columns:repeat(2,minmax(0,1fr))}/* 只读提示条：采写分流的依据 */
+/* 数据来源状态条（参考图 09 / §16.2 第 8 条） */
+.xhs-wb-root .srcbar{display:flex;align-items:flex-start;gap:16px;background:#f5f6f8;
+  border-radius:var(--r-card);padding:15px 18px;margin-bottom:18px}.xhs-wb-root .srcbar .sb-t{font-size:13px;font-weight:600;color:var(--ink)}.xhs-wb-root .srcbar .sb-s{font-size:11.5px;color:var(--ink-3);font-weight:500;margin-top:3px;line-height:1.6}.xhs-wb-root .srcbar .grp{margin-left:auto;flex:0 0 auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}/* 自动同步开关（老哥 09-28 11:04：每天 22:00 自动同步一次，其他时候手动点） */
+.xhs-wb-root .sw{display:inline-flex;align-items:center;gap:8px;font-size:12px;color:var(--ink-2);
+  font-weight:500;cursor:pointer;user-select:none;white-space:nowrap}.xhs-wb-root .sw input{position:absolute;opacity:0;pointer-events:none;width:0;height:0}.xhs-wb-root .sw i{width:34px;height:19px;border-radius:999px;background:#c8d0da;position:relative;
+  flex:0 0 auto;transition:background .15s}.xhs-wb-root .sw i::after{content:'';position:absolute;top:2.5px;left:2.5px;width:14px;height:14px;border-radius:50%;
+  background:#fff;transition:left .15s;box-shadow:0 1px 2px rgba(15,23,42,.18)}.xhs-wb-root .sw input:checked + i{background:var(--brand)}.xhs-wb-root .sw input:checked + i::after{left:17.5px}/* 账号概览按号分组（多号混在一起分不清哪号是哪号的数据） */
+.xhs-wb-root .acc-grp + .acc-grp{margin-top:16px;padding-top:16px;border-top:1px solid var(--line-soft)}.xhs-wb-root .acc-h{display:flex;align-items:center;gap:9px;margin-bottom:11px;flex-wrap:wrap}.xhs-wb-root .acc-h .r{margin-left:auto;font-size:11.5px;color:var(--ink-3);font-weight:500}/* 元信息行 */
+.xhs-wb-root .metainfo{font-size:11.5px;color:var(--ink-3);font-weight:500;background:#f5f6f8;
+  border-radius:8px;padding:8px 14px;margin-bottom:14px}/* 页内大标题 + 副标题（参考图 09/20/21：大标题，右侧跟大数字或一句引导语） */
+.xhs-wb-root .phead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;margin-bottom:20px}.xhs-wb-root .phead .pt{font-size:22px;font-weight:600;letter-spacing:-.022em;line-height:1.2}.xhs-wb-root .phead .ps{font-size:12.5px;color:var(--ink-3);margin-top:5px;font-weight:500}/* 多行文本域（参考图 04：简述与参考是一个文本域里的 5 行，不是 5 个输入框） */
+.xhs-wb-root .ta{width:100%;font:inherit;font-size:12.5px;line-height:1.8;padding:11px 13px;
+  border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--ink);
+  outline:none;resize:vertical;min-height:134px}.xhs-wb-root .ta:focus{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}/* 采集双入口 */
+.xhs-wb-root .picks{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}/* 响应式断点：按「内容区实际宽度」判断，**不是窗口宽度**
+   —— 窗口宽 ≠ 内容宽：Obsidian 侧栏一开一关、窗口没变，内容区却会窄掉一大截。
+   分级由 JS 用 ResizeObserver 写进 html[data-cw]：
+     lg ≥1040 ｜ sm 720–1040 ｜ xs <720 */
+.xhs-wb-root[data-cw="sm"] .cols2,.xhs-wb-root[data-cw="xs"] .cols2{grid-template-columns:1fr}.xhs-wb-root[data-cw="sm"] .cols,.xhs-wb-root[data-cw="xs"] .cols{grid-template-columns:1fr}.xhs-wb-root[data-cw="sm"] .mrow,.xhs-wb-root[data-cw="xs"] .mrow{grid-template-columns:repeat(2,minmax(0,1fr))}.xhs-wb-root[data-cw="xs"] .mrow{grid-template-columns:1fr}.xhs-wb-root[data-cw="sm"] .cards,.xhs-wb-root[data-cw="xs"] .cards{grid-template-columns:repeat(2,minmax(0,1fr))}/* 长列表折叠（老哥 09-27 21:47）：
+   默认只显示 data-fold 条，其余收起；按钮每次再多展开 data-fold-step 条，
+   滑到底点一次继续展开；全部展开后按钮变「收起」→ **一次性回到初始条数**。
+   换成 JS 而不是滚动容器 —— 表格高度不固定，滚动容器要额外定高，反而更难用。
+   真实插件里这段换成"按需加载"（别一次查全）。
+   老哥口径：每日跟踪 10/10；内容分析每组 5 / 每次 +10（09-28 11:10）。 */
+.xhs-wb-root .foldbar{margin-top:15px;text-align:center}.xhs-wb-root .foldbar .btn{color:var(--ink-2);font-weight:500}.xhs-wb-root .foldbar .btn:hover{color:var(--brand);border-color:var(--brand)}/* 选品池两张表：尾部文字列（备注／对标账号）与前一个数值列**要拉开**。
+   数值列是右对齐的，会紧贴后一列，只看 14px 内边距就像"两列粘在一起"
+   （老哥 09-27 21:39 又指出一次：「又出现两个队列贴在一起的情况」）。 */
+.xhs-wb-root #p-pick .tb th:last-child,.xhs-wb-root #p-pick .tb td:last-child{padding-left:56px}/* 窄屏：列宽是百分比，会跟着容器收 → 文字列可能放不下，允许换行（否则 nowrap 直接溢出卡片） */
+.xhs-wb-root[data-cw="xs"] .tb td,.xhs-wb-root[data-cw="xs"] .tb th{white-space:normal}.xhs-wb-root[data-cw="sm"] .picks,.xhs-wb-root[data-cw="xs"] .picks{grid-template-columns:1fr}/* ↑ 这一组按内容宽判断；下面这条按窗口判断（整个骨架要从"左侧导航+内容"变成"上下"） */
+
+ 
+@media(max-width:820px){.xhs-wb-root .shell{flex-direction:column}.xhs-wb-root .side{flex:none;width:auto;height:auto;position:static;flex-direction:row;flex-wrap:wrap;gap:4px;
+        border-right:0;border-bottom:1px solid var(--line);padding:14px}.xhs-wb-root .side-toggle{margin:0 0 0 8px;order:9}.xhs-wb-root .side-foot,.xhs-wb-root .side.mini .side-foot{display:block;margin:0;padding:10px 6px}.xhs-wb-root .side.mini{flex:none;width:auto;padding:14px}.xhs-wb-root .side.mini .nav{padding:9px 13px}.xhs-wb-root .side.mini .nav-tx{display:inline}.xhs-wb-root .side.mini .nav-ic{display:none}
+}
+
+/* ══════════════════════════════════════════════════════════
+   容器适配层（B1）—— 只解决「整个页面 → 一个视图容器」的差异，不改配色 / 间距 / 字号 / 形态。
+   依据：原稿把 body 当页面（`100vh` + `position:fixed`），插件里根元素只是一个容器。
+   这里用 !important 是有意的：原稿相关规则特异性更高（如 `.xhs-wb-root.wall-full .shell > .wall`），
+   而本层只改「定位方式 / 尺寸基准」，不碰任何视觉属性。
+   ══════════════════════════════════════════════════════════ */
+.xhs-wb-root{position:relative;height:100%;overflow:hidden;isolation:isolate}
+.xhs-wb-root .shell{height:100%;min-height:0;overflow:auto}
+.xhs-wb-root .side{height:100%}
+.xhs-wb-root .wall-btn,
+.xhs-wb-root .st-pop,
+.xhs-wb-root .toast,
+.xhs-wb-root .modal{position:absolute !important}
+.xhs-wb-root .modal{inset:0 !important}
+/* ── 壁纸定位分模式（09-30 老哥报修）：
+   · 横幅模式：wall 回流内 —— 之前被适配层强制 absolute，脱离 flex 流后 margin:auto 居中失效
+     （横幅左贴边、宽塌成 --content），且内容区上移叠在横幅上。
+   · 整页模式：wall=absolute 铺满容器。原稿是 fixed，但 fixed 相对「Obsidian 整窗」，
+     而插件视图只是其中一个 tab —— 容器化为 absolute（相对 root）才是「工作台整页」。 */
+.xhs-wb-root:not(.wall-full) .wall{position:static !important}
+.xhs-wb-root.wall-full .wall{position:absolute !important}
+/* 整页模式下 wall 垫底（z-index:-1），内容层盖在上方 —— wall 内的悬浮按钮永远点不到，
+   入口改到「布局」弹层里的「换一张壁纸」（常驻可点），这里的悬浮按钮直接隐藏 */
+.xhs-wb-root.wall-full .wall-btn{display:none}
+.xhs-wb-root .lp-wall-btn{width:100%;margin-top:8px;padding:8px;border:1px solid var(--line);
+  border-radius:8px;background:var(--card);font:inherit;font-size:12px;color:var(--ink-2);cursor:pointer}
+.xhs-wb-root .lp-wall-btn:hover{border-color:var(--brand);color:var(--brand)}
+/* 弹窗说明「行组」：一行一事，行间留 4px（09-30 老哥：长句串一起看着晕） */
+.xhs-wb-root .mod-muted > div + div{margin-top:4px}
+
+/* ── 防「内侵」（B1.2 新增）：Obsidian 自带同名类会把它自己的默认值压到我方组件上 ——
+      根前缀只保证「不外泄」，防不了「内侵」。实测命中（2026-09-29）：
+        .modal → Obsidian 设了 width:560px / max-width:1024px / height:100px /
+                 max-height:884px / border / border-radius / flex-direction:column
+                 ⇒ 我方弹窗变成 560px 宽、100px 高、贴左，遮罩区变小到点不到（连"点空白关闭"都失效）
+        .card  → 也命中，但本稿 markup 未使用该类，暂不处理（用到了再补）
+      只补「我方未声明、又被对方声明」的属性，不覆盖我方已有声明。 */
+.xhs-wb-root .modal{
+  width:auto !important;max-width:none !important;
+  height:auto !important;max-height:none !important;
+  border:0 !important;border-radius:0 !important;
+  flex-direction:row !important;
+}
+
+/* ── 铺满容器（B1.3 新增）：原稿的内容栏宽度是**视口**公式 ——
+      `--content = min(1720px, 100% - var(--gutter) × 2)`，`--gutter = clamp(28px, 4vw, 88px)`。
+      在插件面板里 4vw 取的是「整个 Obsidian 窗口」宽度 → 面板两侧会各留 ~51px 的壁纸带
+      （老哥反馈「这两边不还是空的吗」，红框标的就是这两条）。
+      `--gutter` 全库只被 `--content` 引用一次（已核）→ **单点归零**即可让
+      「内容区 / 顶部导航条内容 / 顶部壁纸」按设计原意一起铺满面板；
+      仍保留 `min(1720px, …)` 的宽屏上限与 `--pad-x`（20–34px）内边距。
+      参照：同为 dashboard 的 alex-desk（Daily Desk）也是「背景满铺 + 内容内边距」的做法。 */
+.xhs-wb-root{--gutter:0px}
+
+/* ── 防「元素级内侵」（B1.3 新增）：Obsidian 的**全局 button 规则**会命中我方所有 `<button>`。
+      根前缀只挡得住「类名撞车」，挡不住**元素级**规则。实测注入（2026-09-29）：
+        box-shadow: 0 0 0 1px inset + 0 1px 2px  ← 给裸文字链接 `.lnk`（设计：padding:0/border:0/background:none）
+                                                   套了一圈内阴影「框」，正是老哥看到的那个方框
+        height: 30px                             ← 把 `.met .d` 的行盒从 18.6px 撑到 30px，
+                                                   于是「去拆解 ›」压住了同行文字「采一篇算一篇」
+      只回退这两项（我方任何类规则若自己声明了 height/box-shadow 都能盖回来），
+      其余（圆角 5px / inline-flex / nowrap）在无边框无底色时不产生视觉差异，故不动，缩小影响面。 */
+.xhs-wb-root button{box-shadow:none;height:auto;min-height:0}
+
+/* ── 壁纸整页模式：把「70% 白」提到 shell 层（B1.3 补 · 修「一放大两边的带又出来了」）——
+      原稿的层次是：`.wall`（壁纸 + 28% 白纱）在最底 → 只有 `.side` / `.main` 带 70% 白。
+      于是**内容栏以外**的区域直接露纱后的饱和壁纸（实测 `#539ed5`），而内容区是淡色
+      （实测 `#e6f2f9`）→ 画面被切成「白内容 + 蓝边框」。
+      窄面板时这条框只有 ~51px 还不明显；**面板越宽**，`.main` 被 `max-width:var(--content)`
+      （= `min(1720px, …)`）限宽居中 → 两侧的框就越宽（老哥 2560px 截图实测：左侧带 **370px**）。
+      参照 `alex-desk`(Daily Desk)：**背景统一、内容限宽居中**，两侧不会出现与内容强烈对比的色块。
+      做法：shell 铺同一层 70% 白（它绘制在壁纸之上、内容之下），`.side` / `.main` 改为透明
+      → 整块面板同色，限宽居中不再可见。**只改「谁承担这层白」，不改色值（仍是 70% 白）**。 */
+.xhs-wb-root.wall-full .shell.top{background:rgba(255,255,255,.7)}
+.xhs-wb-root.wall-full .shell.top .side,
+.xhs-wb-root.wall-full .shell.top .main{background:transparent}
+/* 注：本 V1 布局固定 = 顶栏模式，故只覆盖 `.shell.top`。左侧导航模式保留原稿的
+   「左侧霜面栏 + 内容圆角卡」观感（那时内容本就是一张居中卡，不是整页框）。 */
+
+/* 演示数据标记（B1 新增 · 老哥要求「演示数据必须能一眼看出来」） */
+.xhs-wb-root .demo-tag{display:inline-flex;align-items:center;gap:5px;margin-left:8px;padding:2px 9px;
+  border-radius:999px;font-size:11px;font-weight:600;letter-spacing:.3px;
+  color:#78350A;background:#F7C994;vertical-align:middle}
+.xhs-wb-root .demo-tag::before{content:'';width:6px;height:6px;border-radius:50%;background:#78350A;opacity:.65}
+
+/* ── B2 · 采集接线相关的补充样式（全部限定在视图根内，避免污染宿主） ── */
+.xhs-wb-root .wb-cap-off {
+  opacity: .45;
+  cursor: not-allowed;
+}
+.xhs-wb-root .wb-cap-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--warn, #b26a00);
+  line-height: 1.6;
+}
+/* 采集确认弹窗里的字段表（挂在 Obsidian 的 modal 里，故不加视图根前缀，只用 wb- 前缀防撞车） */
+.wb-ctb {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 4px 0 12px;
+  font-size: 13px;
+}
+.wb-ctb td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  vertical-align: top;
+}
+.wb-ctb td.k {
+  width: 38%;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.wb-cbar {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+/* ── B2.5 · 店铺采集确认弹窗：首页商品单选列表 ── */
+.wb-shop-list {
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  margin: 4px 0 10px;
+}
+.wb-shop-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12.5px;
+  line-height: 1.5;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.wb-shop-row:last-child { border-bottom: 0; }
+.wb-shop-row:hover { background: var(--background-secondary); }
+
+/* ── B3.4 · 模板库「全部模板卡」弹窗 ── */
+.wb-tpl { border: 1px solid var(--background-modifier-border); border-radius: 6px; margin: 6px 0; }
+.wb-tpl summary { cursor: pointer; padding: 8px 12px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.wb-tpl summary:hover { background: var(--background-secondary); }
+.wb-tpl-name { font-weight: 600; }
+.wb-tpl-meta { color: var(--text-muted); font-size: 12px; }
+.wb-tpl-body { padding: 4px 12px 10px; border-top: 1px solid var(--background-modifier-border); }
+.wb-tpl-sec { white-space: pre-wrap; font-size: 12.5px; line-height: 1.7; margin-top: 8px; padding: 8px 10px; background: var(--background-secondary); border-radius: 6px; }
+
+/* ── B4 · 回填台 ── */
+.wb-bf-grid { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 6px 0; }
+.wb-bf-cell { display: flex; flex-direction: column; gap: 2px; min-width: 96px; }
+.wb-bf-cell.wb-bf-wide { width: 100%; }
+.wb-bf-k { font-size: 11px; color: var(--text-muted); }
+.wb-bf-cell input, .wb-bf-cell select { width: 100%; font-size: 12.5px; }
+.wb-bf-ctr { font-size: 13px; font-weight: 600; }
+.wb-bf-sec { font-size: 12px; color: var(--text-muted); margin: 10px 0 4px; }
+.wb-bf-check { margin-right: 6px; }
+
+/* ── B5 · 依赖条中态（未探测） ── */
+.xhs-wb-root .dep-i i.mut-dot { background: var(--text-faint, #999); opacity: .55; }

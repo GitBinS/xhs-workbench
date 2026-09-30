@@ -1708,10 +1708,24 @@ class WorkbenchView extends ItemView {
     }
     const kpi6 = page.querySelector(".kpi6");
     if (kpi6) {
+      // 「上架天数」优先用「上架日期」**实时算**（今天 − 上架日期）——
+      // 「上架天数」字段是**采集当天的快照**，不再采就一直停在那个数（会过期）；
+      // 没有「上架日期」时才回退到快照值兜底。
+      const shelfDays = a ? (() => {
+        const d = String(A.val(a, "上架日期") || "").replace(/[./]/g, "-");
+        const t = d ? new Date(d + "T00:00:00").getTime() : NaN;
+        if (Number.isFinite(t)) {
+          const n = Math.floor((Date.now() - t) / 86400000);
+          if (n >= 0) return n + " 天";
+        }
+        const s = num(A.val(a, "上架天数"));
+        return s == null ? null : s + " 天";
+      })() : null;
       const vals = a
         ? [["对标到手价", fmt2(A.val(a, "对标到手价"))], ["1688 成本", fmt2(A.val(a, "1688成本"))],
            ["毛利", fmt2(A.val(a, "毛利(元)"))], ["单件利润", fmt2(A.val(a, "单件利润(元)"))],
-           ["累计笔记", fmtInt(A.val(a, "累计发笔记数"))], ["累计订单", fmtInt(A.val(a, "累计订单数"))]]
+           ["累计笔记", fmtInt(A.val(a, "累计发笔记数"))], ["累计订单", fmtInt(A.val(a, "累计订单数"))],
+           ["上架天数", shelfDays]]
         : [];
       kpi6.innerHTML = vals.length
         ? vals.map((v) => '<div class="kpi"><div class="k">' + v[0] + '</div><div class="v num">' + (v[1] == null ? UNFILLED : esc(v[1])) + "</div></div>").join("")

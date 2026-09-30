@@ -2373,7 +2373,10 @@ class XhsWorkbenchPlugin extends Plugin {
       }
 
       // 变动项（→ 每日跟踪）：今天已有该品的行就更新，否则新增（不勾「每日跟踪」就整段跳过）
-      const tDateF = F(T, "日期"), tPinF = F(T, "品"), tSoldF = F(T, "商品销量"), tMemoF = F(T, "备注");
+      // 🔴 09-30 修：写入目标 = 「对标总单量」（**界面显示的那一列**）。
+      //    「商品销量」与它同义、且卡片不显示该列（老哥 09-27 21:39 裁定）——
+      //    之前写进了 `商品销量` → 数据落盘了但用户永远看不到，被判"没写进去"。
+      const tDateF = F(T, "日期"), tPinF = F(T, "品"), tSoldF = F(T, "对标总单量"), tMemoF = F(T, "备注");
       const sold = c.track ? c.track["商品销量"] : null;
       let recT = null, tExisted = false;
       if (!wTrack) {
@@ -2392,11 +2395,11 @@ class XhsWorkbenchPlugin extends Plugin {
           if (sold !== null && sold !== undefined) tv[tSoldF.id] = sold;
           recT = dw.makeRecord(tv, nowIso);
           T.records.push(recT);
-          result.动作.push("每日跟踪 新增 " + today + " 一行（商品销量 " + sold + "）");
+          result.动作.push("每日跟踪 新增 " + today + " 一行（对标总单量 " + sold + "）");
         } else {
           if (sold !== null && sold !== undefined) recT.values[tSoldF.id] = sold;
           recT.updatedAt = nowIso;
-          result.动作.push("每日跟踪 更新 " + today + " 那行（商品销量 " + sold + "）");
+          result.动作.push("每日跟踪 更新 " + today + " 那行（对标总单量 " + sold + "）");
         }
         // 变动才采：把 diff 记进备注（§13.5）
         if (diffOnly && result.变更.length) {

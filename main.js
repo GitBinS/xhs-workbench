@@ -18,7 +18,7 @@ const path = require("path");
 const VIEW_TYPE = "xhs-workbench-view";
 const PLUGIN_DIR = ".obsidian/plugins/xhs-workbench";
 const ROOT_SEL = ".xhs-wb-root";
-const DEFAULT_SETTINGS = { wbName: "带货工作台" };
+const DEFAULT_SETTINGS = { wbName: "带货工作台", backupRoot: "" };
 
 /* @@INLINE-ASSETS-BEGIN@@ */
 /* 本块由 工作台工具/inline-assets.py 生成 —— 勿手改；
@@ -511,7 +511,11 @@ class WorkbenchView extends ItemView {
         c = await this.plugin.mergeShopForItem(res, shopData);
       }
       const w = await this.plugin.createArchiveFromCollect(c, pinName, targets);
-      if (!w.ok) { new Notice("写库失败：" + w.error, 14000); return; }
+      if (!w.ok) {
+        new Notice("❌ 写库失败（表没动）\n" + w.error +
+          (/备份失败/.test(w.error) ? "\n\n→ 设置 → 带货工作台 →「备份目录」留空即可（自动用仓库同级 _backups）" : ""), 0);
+        return;
+      }
       const msg = "已写入 ✓\n" + (w.动作 || []).join("\n")
         + (w.变更 && w.变更.length ? "\n变更：" + w.变更.join("；") : "")
         + "\n（模式：" + w.模式 + "）";
@@ -941,8 +945,17 @@ class WorkbenchView extends ItemView {
     if (dup) { new Notice("这篇已经投喂过 → " + dup, 10000); return; }
     this.toast("投喂中…（抓正文 + 下载图片，可能十几秒）");
     let r;
-    try { r = await importer.importXHSNote(url, true, {}); }
+    /* 🔴 2026-10-01：必须把 importer 的**去重索引**传进去。
+       不传的后果（实测踩到）：importer 里 `if (options.index)` 是唯一读/写索引的分支 ——
+       不传 = 它**既不读也不写** → ① 工作台采的笔记**永远不进索引**，之后用插件自己的入口再导同一篇，
+       插件认不出（不提示重复、直接生成「标题-1.md」副本）② 插件索引里已有的记录，工作台也接不到。
+       写法照 importer 自己的单条入口（xhs-importer-pro/main.js:466-469）。 */
+    let index = {};
+    try { index = await importer.loadImportIndex(); } catch (e) { index = {}; }
+    try { r = await importer.importXHSNote(url, true, { index }); }
     catch (e) { new Notice("投喂失败：" + (e && e.message ? e.message : e), 12000); return; }
+    // 导入后立刻回写索引（成功/跳过都要写：跳过时可能刚清掉了一条失效记录）
+    try { await importer.saveImportIndex(index); } catch (e) { /* 索引写失败不影响本次投喂 */ }
     if (r && r.ok) {
       new Notice("已投喂 ✓ → " + r.path, 12000);
       if (ipt) ipt.value = "";
@@ -1088,8 +1101,30 @@ class WorkbenchView extends ItemView {
       let txt = await this.app.vault.read(f);
       if (/^状态:.*$/m.test(txt)) txt = txt.replace(/^状态:.*$/m, "状态: " + value);
       else txt = txt.replace(/^---\n/, "---\n状态: " + value + "\n");
+
+      /* 🔴 2026-10-01 修 P1-1（走查发现）：
+         原来这段**只改 `状态:`，从不写 `发布日期:`** —— 而回填台的待回填卡过滤是
+         `状态 === "已发布" && /^\d{4}-\d{2}-\d{2}$/.test(发布日期)`（见 backfillDueCards）
+         → 日期空 ⇒ **这张卡第二天永远进不了回填台，闭环断**。
+         PRD 流程 1 第 7 步原文就是「一键改已发布 **+ 日期**」。
+         弹窗里没有日期输入框（view.html 无「发布日期」），所以标「已发布」时自动补**当天**；
+         已有合法日期则**不动**（免得把上次的发布日覆盖成今天）。要补录旧日期，直接改 frontmatter。 */
+      let dateMsg = "";
+      if (value === "已发布") {
+        const m = txt.match(/^发布日期:\s*(\S*)\s*$/m);
+        const cur = m ? m[1] : "";
+        if (/^\d{4}-\d{2}-\d{2}$/.test(cur)) {
+          dateMsg = " · 日期沿用 " + cur;
+        } else {
+          const d = todayISO();
+          txt = m
+            ? txt.replace(/^发布日期:.*$/m, "发布日期: " + d)
+            : txt.replace(/^(状态:.*)$/m, "$1\n发布日期: " + d);
+          dateMsg = " · 日期已填 " + d;
+        }
+      }
       await this.app.vault.modify(f, txt);
-      this.toast("状态 → " + value + " ✓（已写入 frontmatter）");
+      this.toast("状态 → " + value + " ✓（已写入 frontmatter）" + dateMsg);
       await this.reloadData();
     } catch (e) { new Notice("改状态失败：" + (e && e.message ? e.message : e), 10000); }
   }
@@ -1511,7 +1546,13 @@ class WorkbenchView extends ItemView {
       formModal.close();
       try {
         const r = await this.doBackfill(summary, bVals, pinName, tplPlan);
-        new Notice(r.ok ? "回填完成 ✓\n" + r.动作.join("\n") : "回填失败：" + r.error, r.ok ? 12000 : 16000);
+        new Notice(
+          r.ok
+            ? "回填完成 ✓\n" + r.动作.join("\n")
+            : "❌ 回填失败（四处都没写）\n" + r.error +
+              (/备份失败/.test(r.error) ? "\n\n→ 设置 → 带货工作台 →「备份目录」留空即可（自动用仓库同级 _backups）" : ""),
+          r.ok ? 12000 : 0,
+        );
         if (r.ok) await this.reloadData();
       } catch (e) { new Notice("回填失败：" + (e && e.message ? e.message : e), 16000); }
     };
@@ -1535,7 +1576,8 @@ class WorkbenchView extends ItemView {
 
     // ② 库外备份
     let backups = [];
-    try { backups.push(dw.backupTable(fM, BACKUP_ROOT)); backups.push(dw.backupTable(fA, BACKUP_ROOT)); }
+    const bRoot = P2.backupRoot();
+    try { backups.push(dw.backupTable(fM, bRoot)); backups.push(dw.backupTable(fA, bRoot)); }
     catch (e) { return { ok: false, error: "备份失败，已中止（不动表）：" + (e && e.message ? e.message : String(e)) }; }
 
     const undoFiles = []; // {path, existed, bakPath}  —— vault 文件回滚用
@@ -1888,6 +1930,19 @@ class WorkbenchView extends ItemView {
     sPan.querySelectorAll(".sr-f").forEach((b) => {
       if (remap[b.dataset.t]) { b.dataset.t = remap[b.dataset.t]; b.title = titles[b.dataset.t] || b.title; }
     });
+    /* 🔴 2026-10-01 修 P1-2（走查发现）：类型按钮点了结果不刷新。
+       原因：原稿（interact.js）那个 .sr-f 处理器只去过滤**它加载时抓到的那批静态 .sr-item**，
+       而 runSearch 是 `list.innerHTML = …` **整块重建**的（新项带 data-stype、没有 data-t）
+       → 原稿那套过滤从一开始就打空了；而切换类型又**没有任何地方触发 runSearch**
+       → 现象就是「点了按钮，结果不动」，用户以为坏了。
+       修法：这里补一个 click —— 切 .on 类 + 用当前关键词重跑 runSearch
+       （runSearch 内部会自己读 .sr-f.on 的 data-t 当 typeFilter）。 */
+    sPan.querySelectorAll(".sr-f").forEach((b) => {
+      b.addEventListener("click", () => {
+        sPan.querySelectorAll(".sr-f").forEach((x) => x.classList.toggle("on", x === b));
+        this.runSearch(sIn.value.trim());
+      });
+    });
     let timer = null;
     sIn.addEventListener("input", () => {
       clearTimeout(timer);
@@ -2017,6 +2072,24 @@ class WorkbenchSettingTab extends PluginSettingTab {
           this.plugin.applyNameToViews();
         })
       );
+    const bkSet = new Setting(containerEl)
+      .setName("备份目录")
+      .setDesc(
+        "写多表前先备份到这里（**库外**，库内不留备份）。留空 = 自动用仓库同级的 _backups/ —— 换电脑不用改。",
+      )
+      .addText((t) =>
+        t
+          .setPlaceholder("留空 = 仓库同级 _backups")
+          .setValue(this.plugin.settings.backupRoot || "")
+          .onChange(async (v) => {
+            this.plugin.settings.backupRoot = v.trim();
+            await this.plugin.saveSettings();
+            bkNow.setText("当前生效：" + this.plugin.backupRoot());
+          })
+      );
+    const bkNow = bkSet.descEl.createEl("div", { cls: "xhs-wb-bk-now" });
+    bkNow.setText("当前生效：" + this.plugin.backupRoot());
+
     containerEl.createEl("div", {
       cls: "setting-item-description",
       text: "壁纸已支持整页与自定义图片：工作台右上角「布局」→ 壁纸。依赖状态实时探测等其余设置项在后续版本加入。",
@@ -2042,7 +2115,13 @@ const TABLE_ARCHIVE = "测品档案";
 const TABLE_TRACK = "每日跟踪";
 const OPT_DISTRICT_CAND = "候选池";        // 分区：候选池
 const OPT_SOURCE_XHS = "小红书市集";       // 来源
-const BACKUP_ROOT = "D:/Documents/work buddy/_backups"; // **库外**备份（库内不留）
+/* 备份目录（**库外**，库内不留）：
+   · 设置里留空（默认）→ 自动用 **vault 同级** 的 `_backups/`，换电脑不变
+   · 也可以填绝对路径，例如 `D:/backups`
+   🔴 2026-10-01 走查根因：这里原来写死 `D:/Documents/work buddy/_backups`，
+      本机没有 D 盘 → 备份步骤直接 ENOENT → 回填 / 采集**两条写链路全部中止**。
+      别再写死路径；要改就改插件设置页的「备份目录」。 */
+const BACKUP_DIRNAME = "_backups";
 
 function todayLocal() {
   const d = new Date(), p = (n) => String(n).padStart(2, "0");
@@ -2340,6 +2419,16 @@ class XhsWorkbenchPlugin extends Plugin {
   }
   dwFile(name) { return path.join(this.dwRoot(), name + ".duowei"); }
 
+  /** 备份根目录（库外）：设置页留空 → vault 同级的 `_backups/`（换电脑不变） */
+  backupRoot() {
+    const set = String((this.settings && this.settings.backupRoot) || "").trim();
+    if (set) return set;
+    const a = this.app.vault.adapter;
+    const base = a.getBasePath ? a.getBasePath() : "";
+    if (!base) return path.join(process.cwd(), BACKUP_DIRNAME); // 兜底：极端情况下拿不到库路径
+    return path.join(base, "..", BACKUP_DIRNAME);
+  }
+
   /** 三纪律之二：表在标签页里开着就拦住（编辑器内存态会覆盖我们的写入） */
   openDuoweiFiles() {
     const a = this.app.vault.adapter;
@@ -2396,8 +2485,9 @@ class XhsWorkbenchPlugin extends Plugin {
     // ② 备份（库外，库内不留）
     const backups = [];
     try {
-      backups.push(dw.backupTable(fA, BACKUP_ROOT));
-      backups.push(dw.backupTable(fT, BACKUP_ROOT));
+      const bRoot = this.backupRoot();
+      backups.push(dw.backupTable(fA, bRoot));
+      backups.push(dw.backupTable(fT, bRoot));
     } catch (e) {
       return { ok: false, error: "备份失败，已中止（不动表）：" + (e && e.message ? e.message : String(e)) };
     }

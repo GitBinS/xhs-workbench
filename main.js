@@ -11,7 +11,7 @@
  * ------------------------------------------------------------------
  */
 
-const { Plugin, ItemView, Notice, Setting, PluginSettingTab, Modal, SuggestModal, TFolder } = require("obsidian");
+const { Plugin, ItemView, Notice, Setting, PluginSettingTab, Modal, SuggestModal, TFolder, setIcon } = require("obsidian");
 const fs = require("fs");
 const path = require("path");
 
@@ -28,6 +28,9 @@ const DEFAULT_SETTINGS = {
   creatorOpencli: "",       // 留空 = 自动探测 opencli 的 main.js
   // V2 批 4（2026-10-01）：知识库页的收录白名单（空 = 用默认 5 个领域目录）
   incDirs: [],
+  // ✏️ 2026-10-02 18:10 —— 老哥要求：
+  ribbonIcon: "rocket",     // 侧栏图标（Lucide 名；原来写死 layout-dashboard，和 duowei-table 的方块感容易混）
+  openOnStartup: false,     // 打开 Obsidian 时自动打开工作台（相当于"首页"）
 };
 
 /* @@INLINE-ASSETS-BEGIN@@ */
@@ -3085,6 +3088,32 @@ class WorkbenchSettingTab extends PluginSettingTab {
           this.plugin.applyNameToViews();
         })
       );
+    /* ✏️ 2026-10-02 18:10 —— 老哥要求加的两个设置项 */
+    new Setting(containerEl)
+      .setName("侧栏图标")
+      .setDesc("左侧边栏那个图标的形状。填 Lucide 图标名（如 rocket / target / store / package），改完即时生效。" +
+        "图标库浏览：lucide.dev —— 看到喜欢的，把网页上那个短横线名字填进来即可。")
+      .addText((t) =>
+        t.setPlaceholder("rocket").setValue(this.plugin.settings.ribbonIcon || "rocket")
+          .onChange(async (v) => {
+            this.plugin.settings.ribbonIcon = String(v).trim() || "rocket";
+            await this.plugin.saveSettings();
+            this.plugin.applyRibbonIcon();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("打开 Obsidian 时自动打开工作台")
+      .setDesc("相当于把工作台设成「首页」。开启后每次启动 Obsidian 会自动打开工作台。" +
+        "（Obsidian 原生没有「首页」这个概念，这是用「启动时自动打开」实现的。）" +
+        "⚠️ 如果上次退出时工作台本来就开着，不会重复开。")
+      .addToggle((t) =>
+        t.setValue(!!this.plugin.settings.openOnStartup).onChange(async (v) => {
+          this.plugin.settings.openOnStartup = v;
+          await this.plugin.saveSettings();
+        })
+      );
+
     const bkSet = new Setting(containerEl)
       .setName("备份目录")
       .setDesc(
@@ -3395,12 +3424,49 @@ class XhsWorkbenchPlugin extends Plugin {
     return null;
   }
 
+  /** 把用户设的「工作台名称」同步到 Obsidian 的插件清单（设置页插件列表里显示的就是它）
+   *  ✏️ 2026-10-02 18:10 —— 老哥要求「设置里改成什么，插件名就同步成什么」。
+   *  ⚠️ 只改**运行时对象**（`app.plugins.manifests[id].name`），**不动 `manifest.json`**：
+   *     那是插件元数据，BRAT 更新会覆盖；改运行时对象才能"持久"（每次启动由 onload 再同步一次）。 */
+  syncManifestName() {
+    try {
+      const name = (this.settings && this.settings.wbName) || "带货工作台";
+      const m = this.app.plugins.manifests[this.manifest.id];
+      if (m && m.name !== name) {
+        m.name = name;
+        // 让已打开的设置页/插件列表也跟着刷新（Obsidian 没提供细粒度 API，兜底触发一次）
+        try { this.app.plugins.loadManifests && this.app.plugins.loadManifests(); } catch {}
+      }
+    } catch (e) { /* 拿不到就算了，不影响主功能 */ }
+  }
+
+  /** 换侧栏图标（设置项改了即时生效） */
+  applyRibbonIcon() {
+    try {
+      const el = this._ribbonEl;
+      if (!el) return;
+      const ic = (this.settings && this.settings.ribbonIcon) || "rocket";
+      setIcon(el, ic);                       // ← 用顶部解构进来的 setIcon（不要 require，eval 环境取不到）
+      el.setAttribute("aria-label", "打开" + ((this.settings && this.settings.wbName) || "工作台"));
+    } catch (e) { /* 换图标失败不影响功能 */ }
+  }
+
   async onload() {
     await this.loadSettings();
     this.dw = this.loadDwLib();   // duowei 写库引擎（纯逻辑模块，可独立用 node 单测）
     this.registerView(VIEW_TYPE, (leaf) => new WorkbenchView(leaf, this));
     this.addSettingTab(new WorkbenchSettingTab(this.app, this));
-    this.addRibbonIcon("layout-dashboard", "打开带货工作台", () => this.activateView());
+    // ✏️ 2026-10-02 18:10 —— 图标改为**可配置**（原来写死 layout-dashboard，跟 duowei-table 的方块感容易混）
+    this._ribbonEl = this.addRibbonIcon(this.settings.ribbonIcon || "rocket", "打开" + (this.settings.wbName || "工作台"), () => this.activateView());
+    // ✏️ 2026-10-02 18:10 —— 启动时同步插件名（把用户设的「工作台名称」写到 Obsidian 的插件清单里）
+    this.syncManifestName();
+    // ✏️ 2026-10-02 18:10 —— 「设为首页」：布局就绪后自动打开工作台（可关）
+    this.app.workspace.onLayoutReady(() => {
+      if (!this.settings.openOnStartup) return;
+      // 已经有工作台视图（Obsidian 恢复了上次布局）→ 不重复开
+      if (this.app.workspace.getLeavesOfType(VIEW_TYPE).length) return;
+      this.activateView();
+    });
     this.addCommand({ id: "open-xhs-workbench", name: "打开带货工作台", callback: () => this.activateView() });
     // ✏️ 2026-10-01 批 3.5：启动自动同步定时器（每 30 秒检查是否到点）
     this.setupAutoSync();
@@ -3803,6 +3869,11 @@ class XhsWorkbenchPlugin extends Plugin {
     } else new Notice("打不开设置面板");
   }
   applyNameToViews() {
+    // ✏️ 2026-10-02 18:10 —— 老哥要求「设置里改成什么，插件名就同步成什么」：
+    //   改名的同时，把名字也写进 Obsidian 的插件清单对象（列表里显示的就是它）。
+    //   ⚠️ 不动 manifest.json —— 那是插件元数据，BRAT 更新会覆盖；改运行时对象即可，
+    //     重启后由 onload 里的 syncManifestName() 再同步一次，所以是持久的。
+    this.syncManifestName();
     this.app.workspace.getLeavesOfType(VIEW_TYPE).forEach((l) => {
       if (l.view && typeof l.view.applyWbName === "function") l.view.applyWbName();
     });

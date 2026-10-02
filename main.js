@@ -721,7 +721,7 @@ class WorkbenchView extends ItemView {
 
   /* ───── 渲染总入口 ───── */
   renderAll(d) {
-    this.renderHead();
+    this.renderHead(d);
     this.renderToday(d);
     this.renderOutput(d);
     this.renderPick(d);
@@ -734,10 +734,28 @@ class WorkbenchView extends ItemView {
     if (this._pickBound) this.refreshPickStatus(d);   // B2：采集条状态（可用性 / 模式 / 上次采集）
   }
 
-  renderHead() {
+  renderHead(d) {
     const t = todayDate();
     const wd = ["日", "一", "二", "三", "四", "五", "六"][t.getDay()];
     setText(this.root.querySelector(".head .date"), `${t.getMonth() + 1}月${t.getDate()}日 星期${wd}`);
+    // ✏️ 笔记本 PC · 2026-10-02 16:10 —— 自查发现侧栏两处**写死没接**（原稿遗留）：
+    //   · `.sf-acct` 写死「账号1」 → 改成真账号（来自创作者后台缓存；没同步过就显示"未同步"）
+    //   · `.sf-day`  写死「Day 5/30」 → 改成 `parsePlan()` 算出的真实进度（数据早就有，只是没接）
+    const src = d || this.data;
+    const acct = (src && src.creator && src.creator.account) || null;
+    const acctEl = this.root.querySelector(".sf-acct");
+    if (acctEl) {
+      acctEl.textContent = acct || "未同步";
+      acctEl.title = acct ? "创作者后台当前账号" : "点数据库页「立即同步」后显示";
+    }
+    const plan = (src && src.plan) || null;
+    const dayEl = this.root.querySelector(".sf-day");
+    if (dayEl) {
+      if (plan && plan.day) {
+        dayEl.textContent = "Day " + plan.day + "/30";
+        dayEl.title = (plan.phase ? plan.phase + " · " : "") + "剩 " + (plan.remain != null ? plan.remain : "?") + " 天";
+      } else dayEl.textContent = "Day —/30";
+    }
   }
 
   /* ───── 工作台（纯投影，自己不写东西） ───── */
@@ -2810,7 +2828,10 @@ class WorkbenchView extends ItemView {
         pop.hidden = true;
         new Notice("✅ 已把「" + path.split("/").pop() + "」改为" + (want ? "只读" : "可编辑") +
           (want ? "（写入 frontmatter 的 `只读` 键）" : (!byDir ? "（已移除该字段，回到按目录判定）" : "（显式覆盖目录的只读）")), 10000);
-        this.renderKnow(this.data).catch(() => {});
+        /* ✏️ 2026-10-02 16:25 —— 自查查出的 bug：改完**立刻**重渲染时，Obsidian 的
+           `metadataCache` 还没重扫完 → `_permOf` 读到的还是**旧权限**（看着像"点了没生效"）。
+           → 延迟一下再重渲染，等索引落定。 */
+        setTimeout(() => { this.renderKnow(this.data).catch(() => {}); }, 450);
       };
     });
     const reset = pop.querySelector(".inc-add");
@@ -2877,7 +2898,19 @@ class WorkbenchView extends ItemView {
       if (idx >= 0) lines[1 + idx] = "只读: " + v;
       else lines.splice(end, 0, "只读: " + v);
     }
-    await this.app.vault.modify(af, lines.join("\n"));   // 只改 frontmatter 行，正文原样
+    /* ✏️ 2026-10-02 16:28 —— 自查查出的 bug：删掉 `只读` 后若 frontmatter **空了**，
+       原来会留下一个空壳 `---\n---`（看着像文件被弄坏了）。
+       → 空块就**整块移除**。
+       ⚠️ 写法说明：不用正则 —— 空块的实际形态是 `---` / `---` **紧挨两行**（中间没有内容行），
+       用 `/^---\n([\s\S]*?)\n---/` 这种写法**匹配不到**（我第一版就栽在这，`([\s\S]*?)` 拿不到空串）。
+       → 直接按行判断，最直白也最不容易错。 */
+    let out2 = lines.join("\n");
+    if (lines[0].trim() === "---" && lines[1] !== undefined && lines[1].trim() === "---") {
+      lines.splice(0, 2);                                 // 连两行 --- 一起删
+      if (lines[0] === "") lines.shift();                 // 顺带吃掉紧跟的空行
+      out2 = lines.join("\n");
+    }
+    await this.app.vault.modify(af, out2);   // 只改 frontmatter 行，正文原样
   }
 
   /** 资源子页签 · 工具表 —— **实时生成**（V2 批 5 · 2026-10-01 21:55）

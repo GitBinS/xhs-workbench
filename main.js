@@ -3410,31 +3410,50 @@ class XhsWorkbenchPlugin extends Plugin {
     return null;
   }
 
-  /** 把用户设的「工作台名称」同步到 Obsidian 的插件清单（设置页插件列表里显示的就是它）
-   *  ✏️ 2026-10-02 18:10 —— 老哥要求「设置里改成什么，插件名就同步成什么」。
-   *  ⚠️ 只改**运行时对象**（`app.plugins.manifests[id].name`），**不动 `manifest.json`**：
-   *     那是插件元数据，BRAT 更新会覆盖；改运行时对象才能"持久"（每次启动由 onload 再同步一次）。 */
+  /** 把用户设的「工作台名称」同步到 Obsidian 认的**所有**名字位（老哥要求：设置里改成什么，插件名就变什么）
+   *  ✏️ 2026-10-02 18:25 —— **修对对象**：原来只改了 `manifests[id].name`，但设置页左侧那个名字是
+   *  **`SettingTab.name`**，而 tab 是插件加载时由 `addSettingTab()` 建的、**建的时候就把 `manifest.name` 抄进去了**
+   *  → 所以三处都要改，而且**必须在 `addSettingTab()` 之前先改 `this.manifest.name`**：
+   *     ① `this.manifest.name`（插件实例自己的 manifest —— 建 tab 时读的就是它）
+   *     ② `app.plugins.manifests[id].name`（插件清单对象 —— 社区插件列表读它）
+   *     ③ 已建出来的 `SettingTab.name`（改完名字后回头把 tab 标题也刷一遍）
+   *  ⚠️ 仍然**不动 `manifest.json`**（那是元数据，BRAT 更新会覆盖；每次启动由 onload 重跑本函数即可持久）。 */
   syncManifestName() {
     try {
       const name = (this.settings && this.settings.wbName) || "带货工作台";
-      const m = this.app.plugins.manifests[this.manifest.id];
-      if (m && m.name !== name) {
-        m.name = name;
-        // 让已打开的设置页/插件列表也跟着刷新（Obsidian 没提供细粒度 API，兜底触发一次）
-        try { this.app.plugins.loadManifests && this.app.plugins.loadManifests(); } catch {}
-      }
-    } catch (e) { /* 拿不到就算了，不影响主功能 */ }
+      if (this.manifest && this.manifest.name !== name) this.manifest.name = name;
+      const m = this.app.plugins && this.app.plugins.manifests && this.app.plugins.manifests[this.manifest.id];
+      if (m && m.name !== name) m.name = name;
+      // ③ 已建的设置页 tab（app.setting.pluginTabs）
+      try {
+        const tabs = this.app.setting && this.app.setting.pluginTabs;
+        if (Array.isArray(tabs)) {
+          for (const t of tabs) {
+            if (t && t.id === this.manifest.id && t.name !== name) t.name = name;
+          }
+        }
+      } catch {}
+      // 如果设置页正开着，重开一次让它重画左侧列表
+      try {
+        if (this.app.setting && this.app.setting.activeTab && this.app.setting.activeTab.id === this.manifest.id) {
+          this.app.setting.openTabById(this.manifest.id);
+        }
+      } catch {}
+    } catch (e) { /* 同步失败不影响主功能 */ }
   }
 
   async onload() {
     await this.loadSettings();
+    // ✏️ 2026-10-02 18:25 —— **必须在 addSettingTab 之前**：设置页左侧那个名字是
+    //   `SettingTab.name`，tab 在 `addSettingTab()` 里建、建的时候把 `manifest.name` 抄进去。
+    //   晚一步改就没用了（这正是上一版"重启后没跟着变"的原因）。
+    this.syncManifestName();
     this.dw = this.loadDwLib();   // duowei 写库引擎（纯逻辑模块，可独立用 node 单测）
     this.registerView(VIEW_TYPE, (leaf) => new WorkbenchView(leaf, this));
     this.addSettingTab(new WorkbenchSettingTab(this.app, this));
     // ✏️ 2026-10-02 18:10 —— 图标改为**可配置**（原来写死 layout-dashboard，跟 duowei-table 的方块感容易混）
     this._ribbonEl = this.addRibbonIcon(this.settings.ribbonIcon || "rocket", "打开" + (this.settings.wbName || "工作台"), () => this.activateView());
-    // ✏️ 2026-10-02 18:10 —— 启动时同步插件名（把用户设的「工作台名称」写到 Obsidian 的插件清单里）
-    this.syncManifestName();
+    // ✏️ 2026-10-02：图标固定 rocket（老哥定）· 启动时同步插件名已提前到 onload 开头
     // ✏️ 2026-10-02 18:10 —— 「设为首页」：布局就绪后自动打开工作台（可关）
     this.app.workspace.onLayoutReady(() => {
       if (!this.settings.openOnStartup) return;

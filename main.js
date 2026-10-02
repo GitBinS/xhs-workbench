@@ -28,8 +28,8 @@ const DEFAULT_SETTINGS = {
   creatorOpencli: "",       // 留空 = 自动探测 opencli 的 main.js
   // V2 批 4（2026-10-01）：知识库页的收录白名单（空 = 用默认 5 个领域目录）
   incDirs: [],
-  // ✏️ 2026-10-02 18:10 —— 老哥要求：
-  ribbonIcon: "rocket",     // 侧栏图标（Lucide 名；原来写死 layout-dashboard，和 duowei-table 的方块感容易混）
+  // ✏️ 2026-10-02 18:12 —— 老哥定：**图标固定用 rocket**，不要设置项（已删掉那个输入框 + 相关方法）
+  ribbonIcon: "rocket",
   openOnStartup: false,     // 打开 Obsidian 时自动打开工作台（相当于"首页"）
 };
 
@@ -3088,20 +3088,6 @@ class WorkbenchSettingTab extends PluginSettingTab {
           this.plugin.applyNameToViews();
         })
       );
-    /* ✏️ 2026-10-02 18:10 —— 老哥要求加的两个设置项 */
-    new Setting(containerEl)
-      .setName("侧栏图标")
-      .setDesc("左侧边栏那个图标的形状。填 Lucide 图标名（如 rocket / target / store / package），改完即时生效。" +
-        "图标库浏览：lucide.dev —— 看到喜欢的，把网页上那个短横线名字填进来即可。")
-      .addText((t) =>
-        t.setPlaceholder("rocket").setValue(this.plugin.settings.ribbonIcon || "rocket")
-          .onChange(async (v) => {
-            this.plugin.settings.ribbonIcon = String(v).trim() || "rocket";
-            await this.plugin.saveSettings();
-            this.plugin.applyRibbonIcon();
-          })
-      );
-
     new Setting(containerEl)
       .setName("打开 Obsidian 时自动打开工作台")
       .setDesc("相当于把工作台设成「首页」。开启后每次启动 Obsidian 会自动打开工作台。" +
@@ -3438,17 +3424,6 @@ class XhsWorkbenchPlugin extends Plugin {
         try { this.app.plugins.loadManifests && this.app.plugins.loadManifests(); } catch {}
       }
     } catch (e) { /* 拿不到就算了，不影响主功能 */ }
-  }
-
-  /** 换侧栏图标（设置项改了即时生效） */
-  applyRibbonIcon() {
-    try {
-      const el = this._ribbonEl;
-      if (!el) return;
-      const ic = (this.settings && this.settings.ribbonIcon) || "rocket";
-      setIcon(el, ic);                       // ← 用顶部解构进来的 setIcon（不要 require，eval 环境取不到）
-      el.setAttribute("aria-label", "打开" + ((this.settings && this.settings.wbName) || "工作台"));
-    } catch (e) { /* 换图标失败不影响功能 */ }
   }
 
   async onload() {

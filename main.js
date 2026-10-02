@@ -11,14 +11,24 @@
  * ------------------------------------------------------------------
  */
 
-const { Plugin, ItemView, Notice, Setting, PluginSettingTab, Modal } = require("obsidian");
+const { Plugin, ItemView, Notice, Setting, PluginSettingTab, Modal, SuggestModal, TFolder } = require("obsidian");
 const fs = require("fs");
 const path = require("path");
 
 const VIEW_TYPE = "xhs-workbench-view";
 const PLUGIN_DIR = ".obsidian/plugins/xhs-workbench";
 const ROOT_SEL = ".xhs-wb-root";
-const DEFAULT_SETTINGS = { wbName: "带货工作台", backupRoot: "" };
+const DEFAULT_SETTINGS = {
+  wbName: "带货工作台",
+  backupRoot: "",
+  // V2 批 3.5（2026-10-01）：同步引擎改内嵌，原 `creatorScript` 废弃
+  autoSyncOn: false,        // 「每天自动同步」开关
+  autoSyncTime: "22:00",    // 自动同步时刻（HH:MM）
+  creatorNode: "",          // 留空 = 自动探测 node.exe
+  creatorOpencli: "",       // 留空 = 自动探测 opencli 的 main.js
+  // V2 批 4（2026-10-01）：知识库页的收录白名单（空 = 用默认 5 个领域目录）
+  incDirs: [],
+};
 
 /* @@INLINE-ASSETS-BEGIN@@ */
 /* 本块由 工作台工具/inline-assets.py 生成 —— 勿手改；
@@ -38,6 +48,11 @@ const P = {
   dwArchive: "多维表格/测品档案.duowei",
   dwTrack: "多维表格/每日跟踪.duowei",
   dwMine: "多维表格/我的每日数据.duowei",
+  /* ✏️ 笔记本 PC · 2026-10-01 19:35 —— V2 批 3：创作者后台同步的 JSON 缓存（**库内相对路径**）
+     🔴 刻意不写盘符：两台机器各自同步同一份相对路径，换机不变。
+     ✏️ 2026-10-01 22:05 —— 产出方已从外置脚本改为**插件内嵌的同步引擎**（`creatorSyncRun`）；
+     外置的 `sync-creator.mjs` 已按老哥指示删除（全以插件为准）。 */
+  creatorDir: "10-小红书带货/00-行动看板/creator-sync",
 };
 const DASH = "—"; // 后台还没有值（不是 0）
 const UNFILLED = "未填"; // 没采到（不是 0）
@@ -271,6 +286,114 @@ class WorkbenchView extends ItemView {
       e.preventDefault();
       e.stopPropagation();
       this.plugin.openSettings();
+    }, true);
+
+    // ✏️ 笔记本 PC · 2026-10-01 19:48 —— V2 批 3：数据库页「立即同步」。
+    //   🔴 **必须走捕获阶段**：原稿（`interact.js:740`）给 `#syncNow` 绑了处理器，
+    //   而且它调了 `e.stopPropagation()` —— 冒泡阶段的监听器**根本收不到**
+    //   （第一次就是栽在这，点按钮弹的还是 V1 那句"演示数据…还没接入"）。
+    //   和上面 `#settingsBtn` 同一个套路：捕获阶段先拦，再 replace 掉原稿行为。
+    this.root.addEventListener("click", (e) => {
+      if (!(e.target.closest && e.target.closest("#syncNow"))) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.runCreatorSync();
+    }, true);
+
+    // ✏️ 笔记本 PC · 2026-10-01 19:55 —— V2 批 3.5：自动同步开关接线。
+    //   原稿那个「每天 22:00 自动同步」checkbox **V1 里完全没接线**（点了不生效、重载还是勾着）。
+    //   这里真接上：勾选/取消 → 写进设置；用捕获阶段，避免被原稿或其它监听器吃掉。
+    this.root.addEventListener("change", (e) => {
+      const cb = e.target;
+      if (!(cb && cb.type === "checkbox" && cb.closest && cb.closest(".srcbar .sw"))) return;
+      this.plugin.settings.autoSyncOn = !!cb.checked;
+      this.plugin.saveSettings();
+      new Notice(cb.checked
+        ? "✅ 已开启自动同步：每天 " + (this.plugin.settings.autoSyncTime || "22:00") + "\n⚠️ 只在 Obsidian 开着时生效（关了就不跑）"
+        : "已关闭自动同步。", 12000);
+    }, true);
+
+    // ✏️ 笔记本 PC · 2026-10-01 20:05 —— V2 批 4：知识库「收录目录」勾选接线。
+    //   勾/取消 → 写进 `settings.incDirs` → 重新扫一遍并渲染（页头数字也跟着变）。
+    this.root.addEventListener("change", (e) => {
+      const cb = e.target;
+      if (!(cb && cb.type === "checkbox" && cb.dataset && cb.dataset.inc)) return;
+      // 🔴 2026-10-01 20:52 —— 渲染期间**屏蔽**：`renderKnow` 会重建收录面板的 DOM，
+      //   重建过程可能触发 change → 被这里当成"用户操作"写回设置 →
+      //   **把收录范围写坏**（实测：`10-小红书带货` 被写掉，页头从 114 掉到 8）。
+      if (this._knowRendering) return;
+      const dir = cb.dataset.inc;
+      const cur = new Set(this._incDirs());
+      if (cb.checked) cur.add(dir); else cur.delete(dir);
+      this.plugin.settings.incDirs = Array.from(cur);
+      this.plugin.saveSettings();
+      this.renderKnow(this.data).catch(() => {});
+    }, true);
+
+    // ✏️ 2026-10-01 批 4：知识库表格的「打开」/「看引用」/「改权限」按钮
+    //   🔴 必须用**事件委托 + 捕获**：表格是动态重建的（innerHTML），
+    //   原稿在加载时对当时的 [data-perm] 元素逐个绑定 → 重建后新元素没有监听器 →「点了没反应」。
+    this.root.addEventListener("click", (e) => {
+      const t = e.target;
+      const openBtn = t.closest && t.closest("[data-open-path]");
+      if (openBtn) {
+        e.preventDefault(); e.stopPropagation();
+        const p = openBtn.dataset.openPath;
+        try { this.app.workspace.openLinkText(p, "", false); } catch {}
+        return;
+      }
+      const refBtn = t.closest && t.closest("[data-refs-path]");
+      if (refBtn) {
+        e.preventDefault(); e.stopPropagation();
+        const p = refBtn.dataset.refsPath;
+        const af = this.app.vault.getAbstractFileByPath(p);
+        let n = 0;
+        try { const bl = this.app.metadataCache.getBacklinksForFile(af); n = bl && bl.data ? Object.keys(bl.data).length : 0; } catch {}
+        new Notice(n ? "「" + p.split("/").pop() + "」被 " + n + " 个文件引用。\n（在文件里按 Ctrl+Shift+B 可看完整反向链接）"
+          : "「" + p.split("/").pop() + "」当前没有被任何文件引用。", 12000);
+        try { this.app.workspace.openLinkText(p, "", false); } catch {}
+        return;
+      }
+      // 「分析详情」→ 按 noteId 填真数据（V2 批 5）
+      //   ✏️ 2026-10-01 21:52 —— 原稿只做了 `anM.hidden=false`（弹窗里是写死的演示值），
+      //   现在按钮带 `data-an="<noteId>"`，由这里接管并填该篇的真实详情。
+      const anBtn = t.closest && t.closest("[data-an]");
+      if (anBtn && anBtn.dataset.an !== undefined && anBtn.dataset.an !== "") {
+        e.preventDefault(); e.stopPropagation();
+        this.openNoteDetail(anBtn.dataset.an);
+        return;
+      }
+      // 「改权限」→ 弹权限浮层（自己实现，不依赖原稿对旧元素的绑定）
+      const permBtn = t.closest && t.closest("[data-perm-path]");
+      if (permBtn) {
+        e.preventDefault(); e.stopPropagation();
+        this.openPermPop(permBtn.dataset.permPath, permBtn);
+        return;
+      }
+    }, true);
+
+    // ✏️ 2026-10-01 20:48 —— 「＋ 添加目录…」
+    //   🔴 之前用 `window.prompt` → **Electron 里抛 `prompt() is not supported`**，
+    //   表现就是"点了没反应"。改成自己弹输入框。
+    this.root.addEventListener("click", (e) => {
+      const t = e.target;
+      if (!(t.closest && t.closest(".inc-add"))) return;
+      e.preventDefault(); e.stopPropagation();
+      this._promptAddDir();
+    }, true);
+
+    // ✏️ 2026-10-01 20:48 —— 收录目录**逐项删除**（老哥：「希望可以自行决定去留」）
+    this.root.addEventListener("click", (e) => {
+      const t = e.target;
+      const del = t.closest && t.closest("[data-inc-del]");
+      if (!del) return;
+      e.preventDefault(); e.stopPropagation();
+      const dir = del.dataset.incDel;
+      const cur = this._incDirs().filter((x) => x !== dir);
+      this.plugin.settings.incDirs = cur;
+      this.plugin.saveSettings();
+      this.renderKnow(this.data).catch(() => {});
+      new Notice("已把「" + dir + "」移出收录范围（文件不会被删，只是不再列进知识库）。", 9000);
     }, true);
 
     this.root.addEventListener("click", (e) => {
@@ -603,6 +726,10 @@ class WorkbenchView extends ItemView {
     this.renderOutput(d);
     this.renderPick(d);
     this.renderDep(d);
+    this.renderData(d);          // ✏️ 2026-10-01 批 3：数据库页（读 creator 缓存）
+    this.renderAutoSync();       // ✏️ 2026-10-01 批 3.5：自动同步开关 / 时间回写
+    // ✏️ 2026-10-01 批 4：知识库页（异步扫文件，不阻塞其它页）
+    this.renderKnow(d).catch((e) => console.warn("[xhs-workbench] 知识库页渲染失败", e));
     this.markPending();
     if (this._pickBound) this.refreshPickStatus(d);   // B2：采集条状态（可用性 / 模式 / 上次采集）
   }
@@ -763,7 +890,7 @@ class WorkbenchView extends ItemView {
                 '<td class="tcell"><div class="t-title">' + esc(c.title || c.name) + '</div><div class="t-sub">' +
                   esc(c.fm["本品"] || "未标品名") + " · 正文 " + c.chars + " 字</div></td>" +
                 '<td class="mut">' + esc(shortTpl(c.fm["归属模板"]) || DASH) + "</td>" +
-                g("曝光量") + g("阅读量") + g("点赞") + g("收藏") + g("评论") +
+                g("曝光数") + g("观看数") + g("点赞数") + g("收藏数") + g("评论数") +
                 '<td><span class="pill"><i></i>' + esc(c.fm["状态"] || UNFILLED) + "</span></td>" +
                 '<td class="r"><button class="btn" data-open-note="' + esc(c.path) + '" style="padding:5px 12px">打开</button></td></tr>';
             }).join("")
@@ -1330,7 +1457,7 @@ class WorkbenchView extends ItemView {
       sum.createSpan({ cls: "wb-tpl-meta", text: "发布 " + cd.fm["发布日期"] + " · 第 " + cd.tDay + " 天" + (cd.due ? " · 今日到期" : " · 逾期未填") + " · " + (unlink(cd.fm["归属模板"]) || "无模板") });
       const body = det.createDiv({ cls: "wb-tpl-body" });
       const grid = body.createDiv({ cls: "wb-bf-grid" });
-      const METRICS = ["曝光量", "阅读量", "点赞", "收藏", "评论", "转发", "商品点击", "订单", "GMV"];
+      const METRICS = ["曝光数", "观看数", "点赞数", "收藏数", "评论数", "分享数", "商品点击", "订单", "GMV"];
       const inputs = {};
       METRICS.forEach((k) => {
         const cell = grid.createDiv({ cls: "wb-bf-cell" });
@@ -1342,11 +1469,11 @@ class WorkbenchView extends ItemView {
       ctr.createSpan({ cls: "wb-bf-k", text: "点击率（自动）" });
       const ctrSpan = ctr.createSpan({ cls: "wb-bf-ctr", text: "—" });
       const recalc = () => {
-        const ex = parseFloat(inputs["曝光量"].value), rd = parseFloat(inputs["阅读量"].value);
+        const ex = parseFloat(inputs["曝光数"].value), rd = parseFloat(inputs["观看数"].value);
         ctrSpan.textContent = ex > 0 && !isNaN(rd) ? ((rd / ex) * 100).toFixed(2) + "%" : "—";
       };
-      inputs["曝光量"].addEventListener("input", recalc);
-      inputs["阅读量"].addEventListener("input", recalc);
+      inputs["曝光数"].addEventListener("input", recalc);
+      inputs["观看数"].addEventListener("input", recalc);
       // 漏斗诊断（48h 填）：5 行 × 数据 / 高中低 / 原因
       body.createEl("div", { cls: "wb-bf-sec", text: "漏斗诊断（48h 填，定位卡在哪一层）" });
       const FUNNEL = ["曝光", "阅读（点击率）", "互动（赞藏评转）", "商品点击", "订单"];
@@ -1473,7 +1600,7 @@ class WorkbenchView extends ItemView {
     picked.forEach((x) => {
       const vals = {};
       Object.keys(x.inputs).forEach((k) => { if (String(x.inputs[k].value).trim() !== "") vals[k] = x.inputs[k].value; });
-      const ex = parseFloat(x.inputs["曝光量"].value), rd = parseFloat(x.inputs["阅读量"].value);
+      const ex = parseFloat(x.inputs["曝光数"].value), rd = parseFloat(x.inputs["观看数"].value);
       if (ex > 0 && !isNaN(rd)) vals["点击率"] = ((rd / ex) * 100).toFixed(2) + "%";
       summary.push({ card: x.card, vals, frows: x.frows.filter((fr) => String(fr.iData.value).trim() !== "" || String(fr.iWhy.value).trim() !== (fr.name === "曝光" ? "平台给没给量 → 选题 / 标签 / 账号权重" : fr.name === "阅读（点击率）" ? "封面 + 标题" : fr.name === "互动（赞藏评转）" ? "正文内容与共鸣" : fr.name === "商品点击" ? "挂车位置 / 价格锚点" : "详情页 / 评价 / 评论区维护")) });
     });
@@ -1509,7 +1636,7 @@ class WorkbenchView extends ItemView {
       const cards = byTpl[t];
       const sumOrd = cards.reduce((a, s) => a + (parseFloat(s.vals["订单"]) || 0), 0);
       const bestCtr = cards.reduce((a, s) => Math.max(a, parseFloat(s.vals["点击率"]) || 0), 0);
-      const bestEye = cards.reduce((a, s) => Math.max(a, parseFloat(s.vals["曝光量"]) || 0), 0);
+      const bestEye = cards.reduce((a, s) => Math.max(a, parseFloat(s.vals["曝光数"]) || 0), 0);
       const tpl = (this.data.templates || []).find((t2) => unlink(t2.fm["模板名"]) === t || t2.name === t);
       const cur = tpl ? tpl.fm : {};
       const plan = {
@@ -2008,17 +2135,870 @@ class WorkbenchView extends ItemView {
         (q ? "没有匹配的笔记 / 模板 / 选题" : "输入关键词，搜已确认的 A/B 范围（笔记 + 模板 + 选题）") + '</span></span></div>';
   }
 
+  /* ───── 知识库页（V2 批 4 · 2026-10-01 接真数据）─────
+     依据：`_结构-工作台-20260924.md` §18 + 老哥 09-28 11:39 的补定义。
+     · 收录范围 = **白名单目录**（存插件 settings，不猜）· 白名单由人在「收录目录」面板维护
+     · **固定排除**（不可勾选）：附件/ · 多维表格/ · 多维表格备份/ · .obsidian/ · 05-日记/ · Daily/ · **待拆解/**
+       （`待拆解/` 是「证据，不是知识」—— 与「未发布笔记不进数据库」同一条原则）
+     · **`拆解原文/` 照收，但标只读**（§18.6）
+     · 页头「知识 N · 工具 M」按**收录范围实时算**，不写死（老哥 09-28 建议）
+     ✏️ 笔记本 PC · 2026-10-01 20:05 —— 新增。 */
+  _incDirsDefault() {
+    return ["10-小红书带货", "20-提示词资产", "50-AI与方法论", "40-学习资料", "30-电脑与环境"];
+  }
+  /** ✏️ 2026-10-01 20:35 —— 收录目录的**实际生效值**。
+   *  坑：`settings.incDirs` 一旦被写过（哪怕写错），默认值就不再兜底 → 会出现
+   *  「主要目录没收录、只收了几篇」的假象。所以这里做**自愈**：
+   *  若配的目录里**一个主要领域目录都没有**（说明配置坏了），直接回退默认。 */
+  _incDirs() {
+    const saved = (this.plugin.settings.incDirs || []).filter(Boolean);
+    if (!saved.length) return this._incDirsDefault();
+    return saved;
+  }
+  _hardExclude() { return ["附件/", "多维表格/", "多维表格备份/", ".obsidian/", "05-日记/", "Daily/", "待拆解/"]; }
+  _readonlyDirs() { return ["10-小红书带货/20-文案库/拆解原文/"]; }
+
+  /** 收集白名单目录下的 md。
+   *  ✏️ 2026-10-01 20:10 —— 改用 **`vault.getMarkdownFiles()` + 路径前缀过滤**。
+   *  原先自己写 `adapter.list` 递归，实测**漏收**（`10-小红书带货` 实际 117 篇、只收到 29 篇）——
+   *  递归里对"目录 vs 文件"的判断不可靠，某些子目录没展开。
+   *  改用 Obsidian 已建好的全库索引，逐文件做前缀匹配，**结构上不会漏**，也更快。 */
+  async _collectKnowFiles() {
+    const dirs = this._incDirs();
+    const ex = this._hardExclude();
+    const out = [];
+    let all = [];
+    try { all = this.app.vault.getMarkdownFiles(); } catch { return out; }
+    for (const f of all) {
+      const rel = f.path;
+      if (!dirs.some((d) => rel === d || rel.startsWith(d + "/"))) continue;
+      // 固定排除：路径里任何一段命中就排除（`待拆解/` 等）
+      if (ex.some((e) => rel.startsWith(e) || rel.includes("/" + e))) continue;
+      if (/\/_模板-/.test(rel) || /^_模板-/.test(rel.split("/").pop())) continue;
+      out.push({ path: rel, rel });
+    }
+    return out;
+  }
+
+  /** 渲染知识库页 */
+  async renderKnow(d) {
+    void d;
+    const page = this.root.querySelector("#p-know");
+    if (!page) return;
+    const ad = this.app.vault.adapter;
+    const roDirs = this._readonlyDirs();
+
+    const files = await this._collectKnowFiles();
+    const rows = [];
+    for (const f of files) {
+      let txt = "";
+      let af = null;
+      try { af = this.app.vault.getAbstractFileByPath(f.path); } catch {}
+      if (!af) continue;
+      // ✏️ 2026-10-01 20:12 —— 用 `cachedRead`（Obsidian 的内容缓存），比 adapter.read 逐个读快得多
+      try { txt = await this.app.vault.cachedRead(af); } catch { continue; }
+      const mf = txt.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      const fm = {};
+      if (mf) mf[1].split("\n").forEach((l) => { const m = l.match(/^([^:\s][^:]*):\s*(.*)$/); if (m) fm[m[1].trim()] = m[2].trim().replace(/^["']|["']$/g, ""); });
+      const h1 = (txt.match(/^#\s+(.+)$/m) || [, ""])[1].trim();
+      const name = f.path.split("/").pop().replace(/\.md$/, "");
+      // 主分类 = 相对路径里去掉文件名的那一段（取末级目录）
+      const parts = f.rel.split("/");
+      const cat = parts.slice(1, -1).join("/") || parts[0];
+      // 权限：frontmatter `只读` 显式覆盖 > 按目录判
+      const explicit = String(fm["只读"] || "").trim();
+      const byDir = roDirs.some((r) => f.rel.startsWith(r));
+      const readonly = explicit ? /^(是|true|1|只读)$/i.test(explicit) : byDir;
+      // 被引用 = 全库 backlink 数（Obsidian 元数据缓存）
+      let refs = 0;
+      try { const bl = this.app.metadataCache.getBacklinksForFile(af); refs = bl && bl.data ? Object.keys(bl.data).length : 0; } catch {}
+      const mtime = (af.stat && af.stat.mtime) || 0;
+      rows.push({
+        path: f.path, rel: f.rel, name, title: h1 || name, cat,
+        type: fm.type || "—", io: String(fm["输入输出"] || "").trim(),
+        readonly, refs, mtime,
+        desc: (fm["一句话"] || fm.description || "").toString().slice(0, 40),
+      });
+    }
+    rows.sort((a, b) => b.mtime - a.mtime);
+
+    // 页头数字：**都实时算**（老哥 2026-10-01 21:48：「实际有几个就是几个」）
+    //   · 知识 = 收录范围里的 md 篇数
+    //   · 工具 = 资源子页签那张表的**实际行数**
+    //   ✏️ 21:55 —— 资源表也改成**实时生成**（原来写死 3 行、与依赖条 4 项对不上）。
+    //     两处现在读同一份真实状态 → 天然一致。
+    this.renderTools();
+
+    const toolRows = page.querySelectorAll("#k-tool tbody tr").length;
+    const pill = page.querySelector(".phead .pill");
+    if (pill) pill.textContent = "知识 " + rows.length + " · 工具 " + toolRows;
+
+    // 表体
+    const fmt = (t) => { if (!t) return DASH; const d2 = new Date(t); return pad2(d2.getMonth() + 1) + "-" + pad2(d2.getDate()); };
+    const body = page.querySelector("#k-know tbody");
+    if (body) {
+      body.innerHTML = rows.length ? rows.map((r) =>
+        // ✏️ 2026-10-01 20:50 —— 老哥：「希望这个知识库也可以和选品池一样，点击标题就跳转」
+        //   给标题加 `data-open-path`，由下面的委托处理器接管（打开源文件）。
+        "<tr><td class=\"tcell\"><div class=\"t-title link\" data-open-path=\"" + esc(r.path) + "\" title=\"点击打开源文件\">" + esc(r.title) +
+          (r.readonly ? ' <span class="ro-tag">只读</span>' : "") + "</div>" +
+          '<div class="t-sub">' + esc(r.desc || r.name) + "</div></td>" +
+        '<td class="mut">' + esc(r.cat) + '</td><td class="mut">' + esc(r.type) + "</td>" +
+        '<td class="cc"><span class="pill"><i></i>' + esc(r.io || DASH) + "</span></td>" +
+        '<td class="cc"><span class="pill' + (r.readonly ? " wr" : "") + '"><i></i>' + (r.readonly ? "只读" : "可编辑") + "</span></td>" +
+        '<td class="r mut num">' + r.refs + '</td><td class="r mut num">' + fmt(r.mtime) + "</td>" +
+        '<td class="r"><button class="btn" data-open-path="' + esc(r.path) + '" style="padding:4px 10px">打开</button> ' +
+        '<button class="btn" data-perm="1" data-perm-path="' + esc(r.path) + '" style="padding:4px 10px">改权限</button> ' +
+        '<button class="btn" data-refs-path="' + esc(r.path) + '" style="padding:4px 10px">看引用</button></td></tr>'
+      ).join("") : '<tr><td colspan="8" class="mut" style="text-align:center;padding:18px">收录范围里没有 md 文件 —— 点「收录目录」调整。</td></tr>';
+    }
+
+    // 收录目录面板：勾选态与计数按真实值回写
+    // ✏️ 2026-10-01 20:52 —— 整段包在 `_knowRendering` 里：重建 DOM 时不让 change 处理器误判成用户操作
+    this._knowRendering = true;
+    const pop = page.querySelector("#incPop");
+    if (pop) {
+      const dirs = this._incDirs();
+      const all = ["10-小红书带货", "20-提示词资产", "50-AI与方法论", "40-学习资料", "30-电脑与环境", "00-收件箱", "Clippings"];
+      const saved = this.plugin.settings.incDirs || [];
+      const extra = saved.filter((d2) => !all.includes(d2));       // 用户自己加过的目录，也要列出来
+      // ✏️ 2026-10-01 21:05 —— 老哥：「点了叉，应该在这里也不会显示这个目录才对」
+      //   → **列表只列「当前收录的目录」**。原来写死了 7 个固定项，所以删完还在（只是计数变 0）。
+      //   要加新的 → 用下面的「＋ 添加目录…」（弹库内目录选择器）。
+      const rowsHtml = dirs.slice().sort().map((d2) => {
+        const n = rows.filter((r) => r.rel && r.rel.startsWith(d2)).length;
+        return '<label class="inc-row"><input type="checkbox" data-inc="' + esc(d2) + '" checked>' +
+          '<span class="inc-path">' + esc(d2) + '</span><span class="inc-n">' + n + "</span>" +
+          '<span data-inc-del="' + esc(d2) + '" title="移出收录范围（不删文件）" style="margin-left:6px;cursor:pointer;opacity:.55;font-size:13px">×</span></label>';
+      }).join("") || '<div class="lp-hint" style="padding:8px 0">还没有收录任何目录 —— 点下面的「＋ 添加目录…」选一个。</div>';
+      // ✏️ 2026-10-01 20:36 —— 先移除旧的 .inc-row 再插新的（原来的实现会与新插入的打架）
+      pop.querySelectorAll(".inc-row").forEach((x) => x.remove());
+      const anchor = pop.querySelector(".inc-add");
+      if (anchor) anchor.insertAdjacentHTML("beforebegin", rowsHtml);
+      else pop.insertAdjacentHTML("afterbegin", rowsHtml);
+    }
+
+    // 折叠：原稿的折叠是"加载时跑一次"，动态重渲染后失效 → 这里自己实现
+    this._applyKnowFold(page);
+    this._knowRendering = false;      // ✏️ 释放渲染屏蔽（见收录面板那段）
+  }
+
+  /** 知识索引表的折叠（动态渲染后重新生效）
+   *  ✏️ 2026-10-01 20:36 —— 老哥口径：**默认 10 条 · 每次展开再 +10 · 收起一次性回到 10**
+   *  （原稿是 5/+10，本节按新口径改成 10/+10/回 10。） */
+  _applyKnowFold(page) {
+    const blk = page.querySelector("#k-know [data-fold]");
+    if (!blk) return;
+    // HTML 里写的是 data-fold="5"（V1 口径）；老哥 2026-10-01 20:31 改成 10/10/回 10
+    // → 这里**直接硬编码 10**，不读 data-fold（避免两处口径打架）
+    const init = 10;
+    const step = 10;
+    const tbl = blk.querySelector("table");
+    if (!tbl) return;
+    const rows = Array.from(tbl.querySelectorAll("tbody tr"));
+    const old = blk.querySelector(".foldbar"); if (old) old.remove();
+    if (rows.length <= init) { rows.forEach((r) => (r.hidden = false)); return; }
+    const bar = document.createElement("div"); bar.className = "foldbar";
+    const btn = document.createElement("button"); btn.className = "btn";
+    bar.appendChild(btn); tbl.parentNode.insertBefore(bar, tbl.nextSibling);
+    let shown = init;
+    const draw = () => {
+      rows.forEach((r, i) => (r.hidden = i >= shown));
+      const rest = rows.length - shown;
+      btn.textContent = rest > 0
+        ? "展开 " + Math.min(step, rest) + " 条 ⌄（还有 " + rest + " 条）"
+        : "收起（回到最近 " + init + " 条） ⌃";
+    };
+    btn.onclick = () => { const rest = rows.length - shown; shown = rest > 0 ? Math.min(shown + step, rows.length) : init; draw(); };
+    draw();
+  }
+
+  /* ───── 数据库页（V2 批 3 · 2026-10-01 接真数据）─────
+     数据源 = `P.creatorDir/creator-latest.json`（由**插件内嵌的同步引擎**产出）。
+     设计原则（延续全库口径）：
+       · **没有缓存 → 整页空态**，绝不摆演示数据（原来的写死数据已全部撤掉）
+       · **空 ≠ 0** —— 平台给 `-` / 字段缺失 → 显示 `—`（DASH），**不写 0**
+       · 多号时按号分组成块往下叠（老哥 09-28 定：不要所有号混一张表）
+     ✏️ 笔记本 PC · 2026-10-01 19:40 —— 本函数为批 3 新增。 */
+  renderData(d) {
+    const page = this.root.querySelector("#p-data");
+    if (!page) return;
+    const c = (d && d.creator) || null;
+    const N = (v) => {
+      if (v === null || v === undefined) return DASH;
+      const s = String(v).trim();
+      if (s === "" || s === "-" || s === "—") return DASH;
+      // "203" / "1.5万" / "0s" 之类原样显示；纯数字加千分位
+      return /^\d+$/.test(s) ? Number(s).toLocaleString("en-US") : s;
+    };
+    const statOf = (...keys) => {
+      const arr = (c && c.stats) || [];
+      for (const k of keys) { const hit = arr.find((s) => String(s.name || "").includes(k)); if (hit) return hit; }
+      return null;
+    };
+
+    // ── ① 顶部状态条 ───────────────────────────────────────────────
+    const pill = page.querySelector(".phead .pill");
+    if (pill) pill.textContent = c ? "已同步 1 个号" : "尚未同步";
+    const sb = page.querySelectorAll(".sb-s");
+    if (sb[0]) sb[0].innerHTML = c
+      ? "自动同步：<strong>每天 22:00 一次</strong>（跟采集／回填同一个节奏）· 其他时候点「立即同步」才去拉"
+      : "还没有同步过 —— 点右侧「立即同步」拉一次（需要 Edge 里已登录小红书并装了 OpenCLI 扩展）";
+    if (sb[1]) sb[1].innerHTML = c
+      ? "最近成功：<strong>" + esc(c.syncedAtLocal || c.syncedAt || "?") + "</strong> · 保持 Edge 与 Obsidian 运行，登录失效时需重新登录。"
+      : "最近成功：—";
+    const meta = page.querySelector("#dataTabs .meta-r");
+    if (meta) {
+      const n = (c && (c.note_ids || []).length) || 0;
+      meta.textContent = c
+        ? "采集于 " + (c.syncedAtLocal || "?") + " · 已同步笔记 " + n + " 条（未发布不计入本页）"
+        : "尚未同步";
+    }
+    const select = page.querySelector(".sb-acc select");
+    if (select) {
+      const acct = (c && c.account) || null;
+      select.innerHTML = c
+        ? '<option>全部已同步号（1 个）</option>' + (acct ? '<option>' + esc(acct) + "</option>" : "")
+        : '<option>（尚未同步）</option>';
+    }
+
+    // ── ② 账号概览（stats 收成 6 卡）────────────────────────────────
+    const ov = page.querySelector("#dOv");
+    if (ov) {
+      const head = ov.querySelector(".bh .r");
+      if (head) head.textContent = c ? "同步于 " + (c.syncedAtLocal || "?") : "尚未同步";
+      const host = ov.querySelector(".acc-grp") || ov.querySelector(".blk");
+      if (!c) {
+        if (host) host.innerHTML = '<div class="tail">' + DASH + ' 还没有同步数据。点右上「立即同步」拉一次。</div>';
+      } else {
+        const pi = c.profile_info || {};
+        const cards = [
+          ["观看数", statOf("观看"), ""],
+          ["平均观看时长", statOf("时长"), ""],
+          ["主页访问", statOf("主页访问", "主页"), ""],
+          ["点赞 / 收藏", statOf("点赞"), statOf("收藏")],
+          ["评论 / 分享", statOf("评论"), statOf("分享")],
+          ["涨粉", statOf("涨粉", "粉丝"), ""],
+        ];
+        const cardHtml = cards.map((c1) => {
+          let v;
+          if (c1[2]) v = N(c1[1] && c1[1].total) + " / " + N(c1[2].total);
+          else v = N(c1[1] && c1[1].total);
+          const trend = (c1[1] && c1[1].trend) ? esc(String(c1[1].trend)) : "—";
+          return '<div class="kpi"><div class="k">' + esc(c1[0]) + '</div><div class="v num">' + v +
+            '</div><div class="sp7"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>' +
+            '<div class="kt">近 7 天 ' + trend + "</div></div>";
+        }).join("");
+        if (host) host.innerHTML =
+          '<div class="acc-h"><span class="pill"><i></i>' + esc(c.account || "（未取到账号）") + "</span>" +
+          '<span class="kt">粉丝：' + N(pi["Followers"]) + " · 等级：" + esc(pi["Creator Level"] || DASH) + "</span></div>" +
+          '<div class="kpi6">' + cardHtml + "</div>" +
+          '<div class="tail">数据源 = <strong>creator-stats / creator-profile</strong> 直接产出（缓存：' +
+          esc(P.creatorDir) + "/creator-latest.json）· <strong>「—」= 平台未返回或不在统计窗口，不是 0</strong></div>";
+      }
+    }
+
+    // ── ③ 内容分析（note_ids 逐篇表）──────────────────────────────
+    const an = page.querySelector("#dAn");
+    if (an) {
+      const host = an.querySelector(".blk");
+      const notes = (c && c.note_ids) || [];
+      if (!c || !notes.length) {
+        if (host) host.innerHTML =
+          '<div class="bh"><div class="bt">内容分析 · 按号分开</div><span class="r">' +
+          (c ? "该号暂无已发布笔记" : "尚未同步") + "</span></div>" +
+          '<div class="tail">' + DASH + ' 没有可显示的笔记。本页<strong>只含已发布笔记</strong>（未发布的在创作台看）。</div>';
+      } else {
+        const rows = notes.map((n) => {
+          const det = n.detail || {};
+          const base = det["基础数据"] || {}, inter = det["互动数据"] || {}, info = det["笔记信息"] || {};
+          const title = info.title || n.title || "(无标题)";
+          const date = String(info.published_at || n.date || "").slice(0, 16);
+          return "<tr><td class=\"tcell\"><div class=\"t-title\">" + esc(title) +
+            '</div><div class="t-sub">' + esc(date || DASH) + " · 观看 " + N(base["观看数"]) + "</div></td>" +
+            '<td class="r num">' + N(base["曝光数"]) + "</td>" +
+            '<td class="r num">' + (base["封面点击率"] && !/^-|^$/.test(base["封面点击率"]) ? esc(base["封面点击率"]) : DASH) + "</td>" +
+            '<td class="r num">' + N(inter["点赞数"]) + '</td><td class="r num">' + N(inter["评论数"]) +
+            '</td><td class="r num">' + N(inter["收藏数"]) + '</td><td class="r num">' + N(inter["分享数"]) +
+            '</td><td class="r num">' + N(base["涨粉数"]) + "</td>" +
+            '<td class="r"><button class="btn" data-an="' + esc(n.noteId || "") + '" style="padding:5px 11px">分析详情 &rsaquo;</button></td></tr>';
+        }).join("");
+        if (host) host.innerHTML =
+          '<div class="bh"><div class="bt">内容分析 · 按号分开</div><span class="r">' +
+          esc(c.account || "") + " · " + notes.length + " 条 · 只含已发布</span></div>" +
+          '<table class="tb"><thead><tr><th>笔记</th><th class="r">曝光数</th><th class="r">封面点击率</th>' +
+          '<th class="r">点赞数</th><th class="r">评论数</th><th class="r">收藏数</th><th class="r">分享数</th>' +
+          '<th class="r">涨粉数</th><th></th></tr></thead><tbody>' + rows + "</tbody></table>" +
+          '<div class="tail">「' + DASH + '」= <strong>平台未返回</strong>（老笔记常给 ' + DASH + '），<strong>不能当作 0</strong> · ' +
+          '完播率 / 2秒退出率 / 观看来源 / 观众画像<strong>接口不返回</strong>，本页不放。</div>';
+      }
+    }
+
+    // ── ④ 粉丝数据（profile_info）────────────────────────────────
+    const fans = page.querySelector("#dFans");
+    if (fans) {
+      const host = fans.querySelector(".blk");
+      const pi = (c && c.profile_info) || null;
+      if (!host) return;
+      if (!pi) {
+        host.innerHTML = '<div class="bh"><div class="bt">账号资料</div><span class="r">尚未同步</span></div>' +
+          '<div class="tail">' + DASH + " 还没有账号资料。点右上「立即同步」拉一次。</div>";
+      } else {
+        host.innerHTML = '<div class="bh"><div class="bt">账号资料</div><span class="r">同步于 ' +
+          esc(c.syncedAtLocal || "?") + "</span></div>" +
+          '<table class="tb"><thead><tr><th>号</th><th class="r">粉丝数</th><th class="r">关注数</th>' +
+          '<th class="r">获赞与收藏</th><th class="r">创作者等级</th><th class="r">升级进度</th><th>简介</th></tr></thead><tbody>' +
+          "<tr><td class=\"t-title\">" + esc(c.account || DASH) + '</td><td class="r num">' + N(pi["Followers"]) +
+          '</td><td class="r num">' + N(pi["Following"]) + '</td><td class="r num">' + N(pi["Likes & Collects"]) +
+          '</td><td class="r">' + esc(pi["Creator Level"] || DASH) + '</td><td class="r num">' + esc(pi["Level Progress"] || DASH) +
+          '</td><td class="mut">' + esc(pi["Bio"] || DASH) + "</td></tr></tbody></table>" +
+          '<div class="tail">取自 <strong>creator-profile</strong>（真实资料，不摆空图）· ' +
+          "粉丝画像（性别／年龄／地域／设备）<strong>平台是否提供待确认</strong> —— 拿到之前不摆空图，也不编。</div>";
+      }
+    }
+  }
+
+  /* ══════════════════ 创作者后台同步（V2 批 3.5 · 内嵌引擎）══════════════════
+     ✏️ 笔记本 PC · 2026-10-01 19:50 —— 由 `sync-creator.mjs` **移植进插件**。
+     为什么内嵌：老哥要求「装了工作台插件就能同步，不用再另配一个脚本路径」。
+     ⚠️ **opencli 仍是外部依赖**（要 Edge 扩展 + 小红书登录态），内嵌省不掉它 ——
+        但省掉了「配脚本路径」这一步，也少一个要同步的文件。
+     硬规矩（沿用 sync-creator.mjs 的 6 条）：
+       · **空 ≠ 0** —— 抓不到就报错中止，绝不把空写成 0
+       · 每步校验条数与字段完整度
+       · 落盘前与上次比对，条数骤降判为抓取故障（不覆盖 latest）
+       · **必须异步 spawn**（2026-09-25 实测：本机 spawnSync 一律 EBUSY）
+     ══════════════════════════════════════════════════════════════════════ */
+
+  /** 找 node.exe / opencli 主文件 —— 见**插件类**上的同名方法（`_findNode` / `_findOpencli`）。
+   *  ✏️ 2026-10-01 19:59：原来写在视图类，但设置页也要用 → 移到插件类，这里只留转发。 */
+  _findNode() { return this.plugin ? this.plugin._findNode() : null; }
+  _findOpencli() { return this.plugin ? this.plugin._findOpencli() : null; }
+
+  /** 跑一次 opencli（异步 spawn，带超时）。返回 { code, out, err } */
+  _oc(bin, mainJs, args, timeout) {
+    return new Promise((resolve) => {
+      const { spawn } = require("child_process");
+      let out = "", err = "", done = false, timer = null, p;
+      const fin = (code) => { if (done) return; done = true; if (timer) clearTimeout(timer); resolve({ code, out, err }); };
+      try { p = spawn(bin, [mainJs, ...args], { windowsHide: true, env: process.env }); }
+      catch (e) { return resolve({ code: 1, out: "", err: "spawn 失败：" + e.message }); }
+      p.stdout.on("data", (d) => (out += d));
+      p.stderr.on("data", (d) => (err += d));
+      p.on("error", (e) => { err += " spawn error: " + (e.code || "") + " " + e.message; fin(1); });
+      p.on("close", (c) => fin(c === null ? 1 : c));
+      timer = setTimeout(() => { err += " [超时 " + (timeout / 1000) + "s]"; try { p.kill(); } catch {} fin(124); }, timeout);
+    });
+  }
+
+  /** 从混有提示文字的输出里抠 JSON */
+  _parseJson(text) {
+    if (!text) return null;
+    const a = text.indexOf("["), o = text.indexOf("{");
+    let start = -1;
+    if (a >= 0 && (o < 0 || a < o)) start = a; else start = o;
+    if (start < 0) return null;
+    const end = Math.max(text.lastIndexOf("]"), text.lastIndexOf("}"));
+    if (end <= start) return null;
+    try { return JSON.parse(text.slice(start, end + 1)); } catch { return null; }
+  }
+
+  /** 在笔记管理页挖 noteId（等价于 sync-creator.mjs 的 EXTRACT_JS） */
+  _extractJs() {
+    return "() => {\n" +
+      "  const out = [];\n" +
+      "  for (const el of document.querySelectorAll('[data-impression]')) {\n" +
+      "    let noteId = '';\n" +
+      "    try { const imp = JSON.parse(el.getAttribute('data-impression') || '{}');\n" +
+      "      noteId = (imp.noteTarget && imp.noteTarget.value && imp.noteTarget.value.noteId) || ''; } catch (e) {}\n" +
+      "    if (!/^[0-9a-f]{24}$/.test(noteId)) continue;\n" +
+      "    out.push({ noteId, raw: (el.innerText || '').trim() });\n" +
+      "  }\n" +
+      "  const body = document.body.innerText || '';\n" +
+      "  return { count: out.length, loading: /正在加载中/.test(body),\n" +
+      "    empty: /没有找到相关笔记/.test(body),\n" +
+      "    total: (body.match(/-\\s*共\\s*(\\d+)\\s*篇笔记\\s*-/) || [])[1] || '', items: out };\n" +
+      "}";
+  }
+
+  /** 主流程：抓 → 组装 → 落盘（库内缓存）→ 落库（写笔记卡 YAML）
+   *  silent=true 时不弹进度提示（自动同步用） */
+  async creatorSyncRun(silent) {
+    const node = this._findNode(), oc = this._findOpencli();
+    if (!node || !oc) {
+      const miss = !node ? "node.exe" : "opencli";
+      new Notice("❌ 找不到 " + miss + "，无法同步。\n\n去 设置 → 带货工作台 手动指定路径（" +
+        (!node ? "「Node 路径」" : "「opencli 主文件」") + "）。", 20000);
+      return null;
+    }
+    const vaultAbs = (() => { try { return this.app.vault.adapter.getBasePath(); } catch { return ""; } })();
+    if (!vaultAbs) { new Notice("❌ 拿不到仓库路径，无法写缓存。", 15000); return null; }
+
+    const t0 = Date.now();
+    const result = {
+      schemaVersion: 1, syncedAt: new Date().toISOString(),
+      syncedAtLocal: new Date().toLocaleString("zh-CN"),
+      account: null, profile_info: null, stats: null,
+      note_count: 0, note_ids: [], errors: [], warnings: [], steps: {},
+    };
+    const step = (name, ok, extra) => { result.steps[name] = Object.assign({ ok }, extra || {}); if (!ok) result.errors.push({ step: name, error: (extra && extra.error) || "" }); };
+
+    try {
+      // ① 账号信息
+      const r1 = await this._oc(node, oc, ["xiaohongshu", "creator-profile", "-f", "json"], 180000);
+      const a1 = this._parseJson(r1.out);
+      if (Array.isArray(a1) && a1.length) {
+        const map = {}; for (const it of a1) if (it && it.field) map[it.field] = it.value;
+        result.profile_info = map; result.account = map["Name"] || null;
+        step("creator-profile", true, { fields: a1.length });
+      } else step("creator-profile", false, { error: "无数据 exit=" + r1.code });
+
+      // ② 账号总览
+      const r2 = await this._oc(node, oc, ["xiaohongshu", "creator-stats", "-f", "json"], 180000);
+      const a2 = this._parseJson(r2.out);
+      if (Array.isArray(a2) && a2.length) {
+        result.stats = a2.map((it) => {
+          const m = String(it.metric || "");
+          const mm = m.match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+          return { name: (mm ? mm[1] : m).trim(), key: mm ? mm[2].trim() : "", total: it.total, trend: it.trend };
+        });
+        step("creator-stats", true, { count: result.stats.length });
+      } else step("creator-stats", false, { error: "无数据 exit=" + r2.code });
+
+      // ③ 挖 noteId（**不依赖已坏的 creator-notes**）
+      const r3 = await this._oc(node, oc, ["browser", "xsync", "open", "https://creator.xiaohongshu.com/new/note-manager", "--window", "foreground"], 180000);
+      void r3;
+      let ids = null;
+      for (let att = 1; att <= 3; att++) {
+        await new Promise((r) => setTimeout(r, att === 1 ? 8000 : 6000));
+        const r4 = await this._oc(node, oc, ["browser", "xsync", "eval", this._extractJs()], 120000);
+        const res = this._parseJson(r4.out);
+        if (res && Array.isArray(res.items) && res.items.length) {
+          ids = res.items.map((it) => {
+            const lines = String(it.raw || "").split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+            const di = lines.findIndex((l) => /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}$/.test(l));
+            const date = di >= 0 ? lines[di] : "";
+            const title = di >= 0 ? lines.slice(0, di).join(" ") : (lines[0] || "");
+            const nums = lines.slice(di >= 0 ? di + 1 : 1)
+              .map((l) => (l.match(/^[\d,]+$/) ? parseInt(l.replace(/,/g, ""), 10) : NaN))
+              .filter((n) => Number.isFinite(n));
+            return { noteId: it.noteId, title, date, card_numbers: nums };
+          });
+          step("note-ids", true, { attempts: att, page_total: res.total || "" });
+          break;
+        }
+      }
+      if (!ids) {
+        step("note-ids", false, { error: "3 次都没提取到 noteId（页面结构可能变了 / 或该账号确实没有笔记）" });
+        // 🔴 硬规矩：空 ≠ 0 → 中止，**不覆盖 latest**
+        result.aborted = "note-ids 提取失败 → 按硬规矩中止，不写空结果";
+        await this._creatorWriteCache(result, vaultAbs, true);
+        new Notice("⚠️ 同步中止：没抓到任何笔记。\n\n（可能是该账号还没有已发布笔记，或页面结构变了）\n旧数据已保留。", 20000);
+        return result;
+      }
+      result.note_ids = ids; result.note_count = ids.length;
+
+      // ④ 逐篇详情
+      for (let i = 0; i < ids.length; i++) {
+        const it = ids[i];
+        const r5 = await this._oc(node, oc, ["xiaohongshu", "creator-note-detail", it.noteId, "-f", "json"], 180000);
+        const a5 = this._parseJson(r5.out);
+        if (Array.isArray(a5) && a5.length) {
+          const sec = {}; for (const x of a5) if (x && x.section) (sec[x.section] ||= {})[x.metric] = x.value;
+          it.detail = sec;
+        } else { it.detail = null; it.detail_error = "无数据 exit=" + r5.code; }
+        await new Promise((r) => setTimeout(r, 800));   // 温和节流
+      }
+
+      // ⑤ 落盘 + ⑥ 落库
+      await this._creatorWriteCache(result, vaultAbs, false);
+      const bf = await this._creatorBackfill(result, vaultAbs);
+      if (bf) result.backfill = bf;
+
+      const secs = ((Date.now() - t0) / 1000).toFixed(1);
+      if (!silent) {
+        new Notice("✅ 同步完成（" + secs + " 秒）\n账号：" + (result.account || "?") +
+          "\n笔记：" + result.note_count + " 篇" +
+          (result.errors.length ? "\n⚠️ 错误 " + result.errors.length + " 条" : "") +
+          (bf ? "\n落库：写 " + bf.planned + " 张卡" + (bf.unmatched ? "，未匹配 " + bf.unmatched + " 条" : "") : ""), 15000);
+      }
+      await this.refreshSnapshot(); this.renderAll(this.data);
+      return result;
+    } catch (e) {
+      new Notice("❌ 同步异常：" + (e && e.message ? e.message : e), 25000);
+      step("exception", false, { error: String(e && e.message ? e.message : e) });
+      return result;
+    }
+  }
+
+  /** 写库内缓存（creator-latest.json）；aborted=true 时**不覆盖 latest**（硬规矩 3） */
+  async _creatorWriteCache(result, vaultAbs, aborted) {
+    const ad = this.app.vault.adapter;
+    const dir = P.creatorDir;
+    try { if (!(await ad.exists(dir))) await ad.mkdir(dir); } catch {}
+    // 与上次比对（条数骤降 = 疑似抓取故障）
+    let prevN = 0;
+    try {
+      const prev = JSON.parse(await ad.read(dir + "/creator-latest.json"));
+      prevN = (prev && prev.note_count) || 0;
+      result.prev_note_count = prevN; result.prev_synced_at = (prev && prev.syncedAtLocal) || null;
+      if (!aborted && prevN > 0 && result.note_count > 0 && result.note_count < prevN * 0.5) {
+        result.warnings.push("⚠️ 条数骤降：上次 " + prevN + " → 本次 " + result.note_count + "，疑似抓取故障");
+      }
+    } catch {}
+    try {
+      await ad.write(dir + "/creator-latest.json", JSON.stringify(result, null, 2));
+    } catch (e) { new Notice("缓存写入失败：" + (e && e.message ? e.message : e), 15000); }
+    return result;
+  }
+
+  /** 落库：把 JSON 里的指标写进笔记卡 frontmatter（逻辑同 sync-creator.mjs 的 backfillToVault） */
+  async _creatorBackfill(result, vaultAbs) {
+    void vaultAbs;
+    const FIELD_MAP = [
+      ["基础数据", "曝光数"], ["基础数据", "观看数"],
+      ["互动数据", "点赞数"], ["互动数据", "收藏数"], ["互动数据", "评论数"], ["互动数据", "分享数"],
+    ];
+    const usable = (v) => v !== null && v !== undefined && String(v).trim() !== "" && String(v).trim() !== "-" && String(v).trim() !== "—";
+    const norm = (s) => String(s || "").replace(/[\s\u3000]/g, "")
+      .replace(/[，。！？、；：""''（）【】《》…—～·,\.!\?;:'"()\[\]<>~\-_/\\|]/g, "").toLowerCase();
+    const ad = this.app.vault.adapter;
+    const dir = P.wencang;
+    let files = [];
+    try { const r = await ad.list(dir); files = (r && r.files) || []; } catch { return null; }
+
+    const cards = [];
+    for (const f of files) {
+      if (!/\.md$/.test(f) || /\/_模板-/.test(f)) continue;
+      let txt; try { txt = await ad.read(f); } catch { continue; }
+      const mf = txt.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+      if (!mf) continue;
+      const fm = {}; mf[1].split("\n").forEach((l) => { const m = l.match(/^([^:\s][^:]*):\s*(.*)$/); if (m) fm[m[1].trim()] = m[2].trim().replace(/^["']|["']$/g, ""); });
+      if (fm.type !== "note") continue;
+      const h1 = (txt.match(/^#\s+(.+)$/m) || [, ""])[1].trim();
+      cards.push({ path: f, name: f.split("/").pop(), txt, fm, h1 });
+    }
+    const byId = new Map(); for (const c of cards) if (c.fm["笔记ID"]) byId.set(String(c.fm["笔记ID"]).trim(), c);
+
+    const plan = [], unmatched = [];
+    for (const n of (result.note_ids || [])) {
+      const nid = String(n.noteId || "").trim(); if (!nid) continue;
+      let card = byId.get(nid) || null, how = card ? "笔记ID" : "";
+      if (!card) {
+        const det = n.detail || {}, info = det["笔记信息"] || {};
+        const pub = String(info.published_at || n.date || "").slice(0, 10);
+        const nt = norm(info.title || n.title || "");
+        const cand = cards.filter((c) => {
+          if (String(c.fm["发布日期"] || "").slice(0, 10) !== pub) return false;
+          const ch = norm(c.h1);
+          return ch && (ch === nt || ch.includes(nt) || nt.includes(ch));
+        });
+        if (cand.length === 1) { card = cand[0]; how = "发布日期+标题"; }
+        else if (cand.length > 1) { unmatched.push({ noteId: nid, why: "标题+日期命中 " + cand.length + " 张卡，不唯一" }); continue; }
+      }
+      if (!card) { unmatched.push({ noteId: nid, title: n.title || "", why: "没有匹配的笔记卡" }); continue; }
+      const det = n.detail || {}, fields = {};
+      for (const [sec, key] of FIELD_MAP) { const v = (det[sec] || {})[key]; if (usable(v)) fields[key] = String(v).trim(); }
+      if (!card.fm["笔记ID"]) fields["笔记ID"] = nid;
+      const pub = String(((det["笔记信息"] || {}).published_at) || "").slice(0, 10);
+      if (pub && !String(card.fm["发布日期"] || "").trim()) fields["发布日期"] = pub;
+      plan.push({ card, fields, how });
+    }
+
+    let written = 0;
+    for (const it of plan) {
+      if (!Object.keys(it.fields).length) continue;
+      const lines = it.card.txt.split("\n");
+      if (lines[0].trim() !== "---") continue;
+      let end = -1; for (let i = 1; i < lines.length; i++) if (lines[i].trim() === "---") { end = i; break; }
+      if (end < 0) continue;
+      for (const [k, v] of Object.entries(it.fields)) {
+        const idx = lines.slice(1, end).findIndex((l) => l.startsWith(k + ":"));
+        if (idx >= 0) lines[1 + idx] = k + ": " + v;
+        else lines.splice(end, 0, k + ": " + v);
+      }
+      try { await ad.write(it.card.path, lines.join("\n")); written++; } catch {}
+    }
+    return { scanned: cards.length, planned: plan.length, written, unmatched: unmatched.length, unmatchedDetail: unmatched.slice(0, 10) };
+  }
+
+  /* ───── 立即同步（V2 批 3.5 · 走内嵌引擎）─────
+     ✏️ 笔记本 PC · 2026-10-01 19:52 —— 原来 spawn 外部 `sync-creator.mjs`，
+     现改为**直接调内嵌的 `creatorSyncRun()`**（老哥要求：装了插件就能同步，不用配脚本路径）。
+     ⚠️ opencli 仍是外部依赖（要 Edge 扩展 + 登录态）—— 探测不到会给可行动提示。 */
+  async runCreatorSync() {
+    const node = this._findNode(), oc = this._findOpencli();
+    if (!node || !oc) {
+      new Notice("❌ 同步前置缺失：" + (!node ? "找不到 node.exe" : "找不到 opencli") +
+        "\n\n去 设置 → 带货工作台 手动指定路径。\n（opencli 是抓取工具，必须装 —— 内嵌省不掉它）", 22000);
+      return;
+    }
+    new Notice("⏳ 正在同步创作者后台…（过程中请不要关闭 Edge）", 8000);
+    await this.creatorSyncRun(false);
+  }
+
+  /** 「＋ 添加目录…」—— ✏️ 2026-10-01 21:05 改成**目录选择器**（老哥：「直接弹 Obsidian 仓库内的文件夹让我选」）。
+   *  用 Obsidian 原生的 `SuggestModal`：**只列库内目录**、可模糊搜索、不用手输路径。
+   *  （不用 Electron 的文件对话框：那样拿到的是磁盘路径，还得反推相对路径，更绕。） */
+  _promptAddDir() {
+    const cur = this._incDirs();
+    const dirs = [];
+    try {
+      this.app.vault.getAllLoadedFiles().forEach((f) => {
+        if (f instanceof TFolder && f.path && f.path !== "/") dirs.push(f.path);
+      });
+    } catch {}
+    const cand = dirs.filter((d) => !cur.includes(d)).sort();
+    if (!cand.length) { new Notice("库内的目录都已经被收录了。", 6000); return; }
+
+    const self = this;
+    class DirPicker extends SuggestModal {
+      constructor(app) {
+        super(app);
+        this.setPlaceholder("输入关键词筛选目录…（回车选中）");
+        this.emptyStateText = "没有匹配的目录";
+      }
+      getSuggestions(q) {
+        const kw = String(q || "").trim().toLowerCase();
+        const list = kw ? cand.filter((d) => d.toLowerCase().includes(kw)) : cand;
+        return list.slice(0, 80);
+      }
+      renderSuggestion(d, el) { el.setText(d); }
+      onChooseSuggestion(d) { self._addIncDir(d); }
+    }
+    new DirPicker(this.app).open();
+  }
+
+  /** 把一个目录加进收录范围 */
+  _addIncDir(d) {
+    const dir = String(d || "").trim().replace(/^\/+|\/+$/g, "");
+    if (!dir) return;
+    if (this._incDirs().includes(dir)) { new Notice("「" + dir + "」已经在收录列表里了。", 6000); return; }
+    this.plugin.settings.incDirs = this._incDirs().concat([dir]);
+    this.plugin.saveSettings();
+    this.renderKnow(this.data).catch(() => {});
+    new Notice("✅ 已把「" + dir + "」加入收录范围。", 8000);
+  }
+
+  /** 「改权限」浮层（V2 批 4）
+   *  ✏️ 2026-10-01 20:38 —— 自己实现（原稿的绑定因表格动态重建而失效）。
+   *  写回位置 = frontmatter 的 `只读` 键（**只在显式改过时才写**；没这个键 = 按目录判）。
+   *  🔴 边界：**只改这一个键、不碰正文**（按行数组精确改，与批 2 落库同一套做法）。
+   *  恢复默认 = 删掉该键。 */
+  openPermPop(path, btn) {
+    const pop = this.root.querySelector("#stPop");
+    const af = this.app.vault.getAbstractFileByPath(path);
+    if (!pop || !af) { new Notice("找不到文件：" + path, 12000); return; }
+    const cur = this._permOf(path);
+    setText(pop.querySelector("#stFile"), path.split("/").pop().replace(/\.md$/, ""));
+    setText(pop.querySelector("#stPath"), path.replace(/\/[^/]+$/, ""));
+    const curEl = pop.querySelector("#stCur");
+    if (curEl) curEl.innerHTML = '<span class="pill' + (cur.readonly ? " wr" : "") + '"><i></i>' + (cur.readonly ? "只读" : "可编辑") + "</span>" +
+      (cur.explicit ? '<span class="mut" style="margin-left:8px">（文件里显式标了 只读: ' + esc(cur.raw) + "）</span>"
+        : '<span class="mut" style="margin-left:8px">（按目录判定）</span>');
+
+    pop.querySelectorAll(".st-opt").forEach((b) => {
+      b.onclick = async () => {
+        const want = b.textContent.trim().indexOf("只读") === 0;
+        // ✏️ 2026-10-01 21:35 —— 老哥试出来的设计问题：点「可编辑」原来会写 `只读: false`，
+        //   等于给文件留了个**无意义的 frontmatter 块**（false 本来就等于"没标过"）。
+        //   正解：**「可编辑」在普通目录下 = 删字段**（不留痕，回到"按目录判"）；
+        //   只有**在只读目录里**才需要显式写 `false` —— 因为要用它覆盖"按目录判只读"。
+        const byDir = this._readonlyDirs().some((r) => path.startsWith(r));
+        if (!want && !byDir) await this._setPerm(path, null);
+        else await this._setPerm(path, want);
+        pop.hidden = true;
+        new Notice("✅ 已把「" + path.split("/").pop() + "」改为" + (want ? "只读" : "可编辑") +
+          (want ? "（写入 frontmatter 的 `只读` 键）" : (!byDir ? "（已移除该字段，回到按目录判定）" : "（显式覆盖目录的只读）")), 10000);
+        this.renderKnow(this.data).catch(() => {});
+      };
+    });
+    const reset = pop.querySelector(".inc-add");
+    if (reset) reset.onclick = async () => {
+      await this._setPerm(path, null);
+      pop.hidden = true;
+      new Notice("已恢复「按目录判定」。", 8000);
+      this.renderKnow(this.data).catch(() => {});
+    };
+
+    pop.hidden = false;
+    try {
+      const r = btn.getBoundingClientRect();
+      const B = this.root.getBoundingClientRect();
+      const w = pop.offsetWidth, h = pop.offsetHeight;
+      const left = Math.max(12, Math.min(r.left - B.left - 24, B.width - w - 12));
+      let top = r.bottom - B.top + 8;
+      if (top + h > B.height - 12) top = Math.max(12, B.height - h - 12);
+      pop.style.left = left + "px";
+      pop.style.top = top + "px";
+    } catch {}
+  }
+
+  /** 读某文件的权限：{ readonly, explicit, raw } —— 显式 `只读` 键 > 按目录判 */
+  _permOf(path) {
+    let explicitRaw = "";
+    try {
+      const af = this.app.vault.getAbstractFileByPath(path);
+      const cache = af ? this.app.metadataCache.getFileCache(af) : null;
+      if (cache && cache.frontmatter) explicitRaw = String(cache.frontmatter["只读"] == null ? "" : cache.frontmatter["只读"]).trim();
+    } catch {}
+    const byDir = this._readonlyDirs().some((r) => path.startsWith(r));
+    if (explicitRaw) return { readonly: /^(是|true|1|只读)$/i.test(explicitRaw), explicit: true, raw: explicitRaw };
+    return { readonly: byDir, explicit: false, raw: "" };
+  }
+
+  /** 写权限：want=true/false 写 frontmatter `只读` 键；want=null 删掉该键（恢复按目录判）
+   *  ✏️ 2026-10-01 20:50 —— **没有 frontmatter 的文件也能改**：
+   *  库里很多文件（`log.md`、`AGENTS.md` 等）根本没 frontmatter 块，原来直接报
+   *  「这个文件没有 frontmatter，改不了权限」→ 老哥反馈"所有文件都改不了"。
+   *  现在：**没有就补一个只含 `只读` 键的最小 frontmatter**（加在文件最前面，**正文一字不动**）。
+   *  ⚠️ 恢复默认（want=null）对"本来就是补出来的"情况不做删除（避免把 frontmatter 拆空）——
+   *     改为写入 `只读: false`，语义等价（显式可编辑）。 */
+  async _setPerm(path, want) {
+    const af = this.app.vault.getAbstractFileByPath(path);
+    if (!af) return;
+    let txt = ""; try { txt = await this.app.vault.read(af); } catch { return; }
+    const lines = txt.split("\n");
+    const hasFM = lines[0].trim() === "---";
+    if (!hasFM) {
+      if (want === null) { new Notice("这个文件没有 frontmatter，无需恢复默认（它本来就没被显式标过）。", 9000); return; }
+      // 补一个最小 frontmatter，插在文件最前面；正文原样跟在后面
+      const v = want ? "true" : "false";
+      const out = "---\n只读: " + v + "\n---\n" + txt;
+      await this.app.vault.modify(af, out);
+      return;
+    }
+    let end = -1; for (let i = 1; i < lines.length; i++) if (lines[i].trim() === "---") { end = i; break; }
+    if (end < 0) { new Notice("frontmatter 不完整，改不了权限。", 10000); return; }
+    const idx = lines.slice(1, end).findIndex((l) => l.startsWith("只读:"));
+    if (want === null) { if (idx >= 0) lines.splice(1 + idx, 1); }
+    else {
+      const v = want ? "true" : "false";
+      if (idx >= 0) lines[1 + idx] = "只读: " + v;
+      else lines.splice(end, 0, "只读: " + v);
+    }
+    await this.app.vault.modify(af, lines.join("\n"));   // 只改 frontmatter 行，正文原样
+  }
+
+  /** 资源子页签 · 工具表 —— **实时生成**（V2 批 5 · 2026-10-01 21:55）
+   *  老哥：「工具显示有 3 个，但右上角显示了 4 个，要实际有几个就是几个」。
+   *  → 这张表**不改 HTML**（原来写死 3 行），改为按**真实安装状态**渲染，
+   *     数据源与侧栏依赖条（`renderDep`）**同一套判断**，两处天然一致。
+   *  ⚠️ 口径：这里列的是**工作台依赖的工具**（不是一个插件一个坑位）。 */
+  renderTools() {
+    const tbody = this.root.querySelector("#k-tool tbody");
+    if (!tbody) return;
+    const pm = this.app.plugins;
+    const col = pm.getPlugin("xhs-product-search");
+    const sc = String((this.plugin.settings && this.plugin.settings.creatorScript) || "").trim();
+    void sc;
+    const ocOk = !!(this.plugin._findNode && this.plugin._findNode() && this.plugin._findOpencli && this.plugin._findOpencli());
+    const items = [
+      { name: "xhs-importer-pro", use: "小红书笔记 → 待拆解", ok: !!pm.getPlugin("xhs-importer-pro") },
+      { name: "duowei-table", use: "读写三张 .duowei 表", ok: !!(this.data && this.data.dw && this.data.dw.ok && this.data.dw.ok.archive) },
+      { name: "xhs-product-search", use: "商品采集（选品池内置引擎）", ok: !!col },
+      { name: "opencli", use: "创作者后台数据同步", ok: ocOk },
+    ];
+    const esc2 = esc;
+    tbody.innerHTML = items.map((it) => {
+      const pill = it.ok
+        ? '<span class="pill"><i></i>已装</span>'
+        : '<span class="pill wr"><i></i>未就绪</span>';
+      return '<tr><td class="t-title">' + esc2(it.name) + '</td><td class="mut">' + esc2(it.use) + '</td><td class="cc">' + pill + "</td></tr>";
+    }).join("");
+  }
+
+  /** 「分析详情」弹窗 —— 按 noteId 填真数据（V2 批 5 · 2026-10-01 21:52）
+   *  数据源 = `creator-latest.json` 里该篇的 `detail`（4 段 13 项）。
+   *  🔴 **空 ≠ 0**：接口没返回的（完播率 / 2秒退出率 / 观看来源 / 观众画像）显示 `—` 并说明"平台不返回"，
+   *     绝不当 0 摆出来。 */
+  openNoteDetail(noteId) {
+    const modal = this.root.querySelector("#anModal");
+    if (!modal) return;
+    const c = (this.data && this.data.creator) || null;
+    const n = c ? (c.note_ids || []).find((x) => String(x.noteId) === String(noteId)) : null;
+    const det = (n && n.detail) || null;
+
+    const info = (det && det["笔记信息"]) || {};
+    setText(modal.querySelector(".an-sub"), (info.title || (n && n.title) || "(无标题)") + " · " + (c ? (c.account || "") : ""));
+    setText(modal.querySelector(".m-s"), "发布于 " + String(info.published_at || (n && n.date) || DASH) + " · 采集于 " + (c ? (c.syncedAtLocal || "?") : "?"));
+
+    if (!det) {
+      const core = modal.querySelector("#anCore");
+      if (core) core.innerHTML = '<div class="na">这一篇<strong>没有详情数据</strong>（' +
+        (n && n.detail_error ? esc(n.detail_error) : "采集时未取到") + "）。<br>点「立即同步」重跑一次试试。</div>";
+      modal.hidden = false;
+      return;
+    }
+    const base = det["基础数据"] || {}, inter = det["互动数据"] || {};
+    const V = (v) => {
+      const s = String(v == null ? "" : v).trim();
+      if (!s || s === "-" || s === "—") return { cls: "v dash num", txt: DASH };
+      return { cls: "v num", txt: /^\d+$/.test(s) ? Number(s).toLocaleString("en-US") : s };
+    };
+    const KPI = (label, v) => { const o = V(v); return '<div class="kpi"><div class="k">' + esc(label) + '</div><div class="' + o.cls + '">' + esc(o.txt) + "</div></div>"; };
+
+    const core = modal.querySelector("#anCore");
+    if (core) core.innerHTML =
+      '<div class="kpi6">' +
+        KPI("曝光数", base["曝光数"]) + KPI("观看数", base["观看数"]) + KPI("封面点击率", base["封面点击率"]) +
+        KPI("平均观看时长", base["平均观看时长"]) + KPI("完播率", null) + KPI("2 秒退出率", null) +
+      "</div>" +
+      '<div class="kpi5">' +
+        KPI("涨粉数", base["涨粉数"]) + KPI("点赞数", inter["点赞数"]) + KPI("评论数", inter["评论数"]) +
+        KPI("收藏数", inter["收藏数"]) + KPI("分享数", inter["分享数"]) +
+      "</div>" +
+      '<div class="tail">以上为<strong>笔记详情页口径</strong>（来源：creator-note-detail）<br>' +
+        "「" + DASH + "」= <strong>平台未返回</strong>（<strong>不是 0</strong>）· " +
+        "<strong>完播率 / 2 秒退出率</strong>在这个接口的返回里<strong>没有</strong>，不是没采到</div>";
+
+    const setNa = (sel, txt) => { const el = modal.querySelector(sel); if (el) el.innerHTML = '<div class="na">' + txt + "</div>"; };
+    setNa("#anTrend", "接口原话：<strong>「观众趋势：暂不可用」</strong><br>后台<strong>没有返回</strong>这条笔记的趋势序列 —— <strong>不是没采，是平台不给</strong>。<br>发一篇新笔记后跑一次同步，看新笔记能不能取到。");
+    setNa("#anSrc", "这一项在 <code>creator-note-detail</code> 的<strong>输出里没有</strong> —— 不是被过滤掉，是接口本身没返回。<br><strong>拿不到就不摆</strong>：不画空图，也不拿别的东西凑。");
+    setNa("#anAud", "同上：<strong>接口输出里没有观众画像</strong>（性别／年龄／地域分布）。<br>若复核后平台确实不开放，这一页签在真插件里就<strong>不显示</strong>（而不是留一个点开是空的按钮）。");
+
+    modal.querySelectorAll("#anTabs .subtab").forEach((t, i) => t.classList.toggle("on", i === 0));
+    ["anCore", "anTrend", "anSrc", "anAud"].forEach((id) => { const el = modal.querySelector("#" + id); if (el) el.hidden = id !== "anCore"; });
+    modal.hidden = false;
+  }
+
+  /* ───── 自动同步（V2 批 3.5）─────
+     定时器与 tick 都实现在**插件类**（见 `XhsWorkbenchPlugin.setupAutoSync`），
+     因为定时器不该依赖"工作台视图已打开"。这里只留一个"把界面状态回写"的渲染函数。 */
+
+  /** 把「自动同步」开关 / 时间 回写到界面（渲染时调） */
+  renderAutoSync() {
+    const page = this.root.querySelector("#p-data");
+    if (!page) return;
+    const s = this.plugin.settings || {};
+    const cb = page.querySelector(".srcbar .sw input[type=checkbox]");
+    if (cb) cb.checked = !!s.autoSyncOn;
+    const lab = page.querySelector(".srcbar .sw");
+    if (lab) {
+      // 把「每天 22:00 自动同步」这行文案换成真实时间（原稿写死 22:00）
+      const nodes = Array.from(lab.childNodes).filter((n) => n.nodeType === 3);
+      if (nodes.length) nodes[nodes.length - 1].nodeValue = "每天 " + (s.autoSyncTime || "22:00") + " 自动同步";
+      else lab.appendChild(document.createTextNode("每天 " + (s.autoSyncTime || "22:00") + " 自动同步"));
+    }
+  }
+
   /* ───── 依赖状态（§18.7）：只探测能真探测的；开放外部命令（opencli/Edge）V1 简化 ───── */
   renderDep(d) {
     const list = this.root.querySelector(".dep-list");
     if (!list) return;
     const pm = this.app.plugins;
     const col = pm.getPlugin("xhs-product-search");
+    // ✏️ 笔记本 PC · 2026-10-01 19:52 —— V2 批 3.5：opencli 项改**真探测**（探 node + opencli 两个文件在不在）。
+    //   不真去跑 opencli（要 20 秒且会碰浏览器）；"文件就位"是足够好的代理指标，零副作用。
+    const ocOk = !!(this._findNode() && this._findOpencli());
+    const ocTip = ocOk
+      ? "同步引擎就位：node + opencli 都已找到 → 「立即同步」可用"
+      : "缺 " + (!this._findNode() ? "node.exe" : "opencli") + " → 去 设置 → 带货工作台 手动指定路径";
     const items = [
       { label: "duowei", ok: !!(d.dw.ok.archive && d.dw.ok.track && d.dw.ok.mine), tip: d.dw.ok.err || "三张表可读" },
       { label: "importer", ok: !!pm.getPlugin("xhs-importer-pro"), tip: pm.getPlugin("xhs-importer-pro") ? "xhs-importer-pro 已启用" : "xhs-importer-pro 未启用 → 爆款投喂不可用" },
       { label: "collector", ok: !!col, tip: col ? "xhs-product-search 已启用（内置采集引擎，采集条可自检）" : "xhs-product-search 未启用 → 商品采集置灰" },
-      { label: "opencli", ok: null, tip: "外部命令（Edge/扩展/登录号）—— V1 简化不探测（PRD §6.2 允许），创作者同步为演示" },
+      { label: "opencli", ok: ocOk, tip: ocTip || "外部命令（Edge/扩展/登录号）—— V1 简化不探测（PRD §6.2 允许）" },
     ];
     list.innerHTML = items.map((i) =>
       '<span class="dep-i" title="' + esc(i.tip) + '"><i class="' + (i.ok === true ? "d" : i.ok === false ? "d wr" : "d mut-dot") + '"></i>' + esc(i.label) + "</span>").join("");
@@ -2032,9 +3012,9 @@ class WorkbenchView extends ItemView {
 
   /* ───── 演示标记 + 未接线按钮（演示数据必须一眼看得出来） ───── */
   markDemo() {
-    const put = (hostEl, text) => { if (hostEl && !hostEl.querySelector(".demo-tag")) hostEl.createSpan({ cls: "demo-tag", text }); };
-    put(this.root.querySelector("#p-data .phead > div"), "演示数据");
-    put(this.root.querySelector("#p-know .phead > div"), "演示数据");
+    void 0;
+    // ✏️ 笔记本 PC · 2026-10-01 20:05 —— 数据库页（批 3）与知识库页（批 4）都已接真数据，
+    //   **两处「演示数据」角标全部撤掉**。将来若某页又变回演示，在这里加回来。
   }
 
   markPending() {
@@ -2089,6 +3069,49 @@ class WorkbenchSettingTab extends PluginSettingTab {
       );
     const bkNow = bkSet.descEl.createEl("div", { cls: "xhs-wb-bk-now" });
     bkNow.setText("当前生效：" + this.plugin.backupRoot());
+
+    /* ✏️ 笔记本 PC · 2026-10-01 19:52 —— V2 批 3.5：同步引擎已内嵌进插件，
+       **不再需要「同步脚本路径」**（该设置项删除）。保留的是「没探到时可手动指定」两个兜底项。 */
+    new Setting(containerEl)
+      .setName("自动同步")
+      .setDesc("打开后，每天到下面这个时刻自动拉一次创作者后台数据。⚠️ 只在 Obsidian 开着时生效。")
+      .addToggle((t) =>
+        t.setValue(!!this.plugin.settings.autoSyncOn).onChange(async (v) => {
+          this.plugin.settings.autoSyncOn = v;
+          await this.plugin.saveSettings();
+        })
+      )
+      .addText((t) =>
+        t.setPlaceholder("22:00").setValue(this.plugin.settings.autoSyncTime || "22:00")
+          .onChange(async (v) => {
+            const s = String(v).trim();
+            if (!/^\d{1,2}:\d{2}$/.test(s)) return;      // 只认 HH:MM
+            const [h, m] = s.split(":");
+            this.plugin.settings.autoSyncTime = pad2(Math.min(23, parseInt(h, 10))) + ":" + pad2(Math.min(59, parseInt(m, 10)));
+            await this.plugin.saveSettings();
+          })
+      );
+
+    const nodeSet = new Setting(containerEl)
+      .setName("Node 路径（兜底）")
+      .setDesc("同步引擎用它跑 opencli。留空 = 自动探测（`C:\\Program Files\\nodejs\\node.exe`）。探不到才需要填。")
+      .addText((t) =>
+        t.setPlaceholder("留空 = 自动探测").setValue(this.plugin.settings.creatorNode || "")
+          .onChange(async (v) => { this.plugin.settings.creatorNode = v.trim(); await this.plugin.saveSettings(); nodeNow.setText("当前生效：" + (this.plugin._findNode() || "（未找到）")); })
+      );
+    const nodeNow = nodeSet.descEl.createEl("div", { cls: "xhs-wb-bk-now" });
+    nodeNow.setText("当前生效：" + (this.plugin._findNode() || "（未找到）"));
+
+    const ocSet = new Setting(containerEl)
+      .setName("opencli 主文件（兜底）")
+      .setDesc("`opencli` 的 `dist/src/main.js` 完整路径。留空 = 自动探测 `~/.local/bin/node_modules/@jackwener/opencli/dist/src/main.js`。" +
+        "⚠️ **opencli 是外部抓取工具，内嵌省不掉它**（要 Edge 扩展 + 小红书登录态）。")
+      .addText((t) =>
+        t.setPlaceholder("留空 = 自动探测").setValue(this.plugin.settings.creatorOpencli || "")
+          .onChange(async (v) => { this.plugin.settings.creatorOpencli = v.trim(); await this.plugin.saveSettings(); ocNow.setText("当前生效：" + (this.plugin._findOpencli() || "（未找到）")); })
+      );
+    const ocNow = ocSet.descEl.createEl("div", { cls: "xhs-wb-bk-now" });
+    ocNow.setText("当前生效：" + (this.plugin._findOpencli() || "（未找到）"));
 
     containerEl.createEl("div", {
       cls: "setting-item-description",
@@ -2274,6 +3297,71 @@ class CollectConfirmModal extends Modal {
 }
 
 class XhsWorkbenchPlugin extends Plugin {
+  /* ───── 自动同步（V2 批 3.5）─────
+     ✏️ 笔记本 PC · 2026-10-01 19:55 —— 新增。原稿那个「每天 22:00 自动同步」开关
+     **V1 里完全没接线**（全库无任何定时器），这次真接上，且时间可自定义。
+     做法：每 30 秒检查一次「是否到了设定时刻且今天还没跑过」；到点 → 确保视图在 → 调同步引擎。
+     ⚠️ 只在 Obsidian 开着时生效（插件没法在应用关闭时运行）—— 这点在 UI 与提示里都写明，不假装它是后台服务。 */
+  setupAutoSync() {
+    if (this._autoTimer) { try { clearInterval(this._autoTimer); } catch {} }
+    this._autoTimer = setInterval(() => { this._autoSyncTick(); }, 30000);
+    this.registerInterval(this._autoTimer);
+  }
+
+  async _autoSyncTick() {
+    const s = this.settings || {};
+    if (!s.autoSyncOn) return;
+    const hm = String(s.autoSyncTime || "22:00");
+    const d = new Date();
+    const now = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    if (now !== hm) return;
+    const today = (() => { const t = new Date(); return t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") + "-" + String(t.getDate()).padStart(2, "0"); })();
+    if (this._autoLastRun === today) return;      // 今天已经跑过
+    this._autoLastRun = today;
+
+    let v = (this.app.workspace.getLeavesOfType(VIEW_TYPE)[0] || {}).view;
+    if (!v || typeof v.creatorSyncRun !== "function") {
+      try { await this.activateView(); await new Promise((r) => setTimeout(r, 1500)); } catch {}
+      v = (this.app.workspace.getLeavesOfType(VIEW_TYPE)[0] || {}).view;
+    }
+    if (!v || typeof v.creatorSyncRun !== "function") {
+      new Notice("⚠️ 自动同步没跑成：工作台视图没起来。请手动打开工作台再点「立即同步」。", 20000);
+      return;
+    }
+    try {
+      const r = await v.creatorSyncRun(true);
+      new Notice(r && r.aborted ? "⚠️ 自动同步中止（没抓到笔记，旧数据已保留）" : "✅ 自动同步完成（" + hm + "）", 15000);
+    } catch (e) {
+      new Notice("❌ 自动同步失败：" + (e && e.message ? e.message : e), 20000);
+    }
+  }
+
+  /** 找 node.exe（内嵌引擎用它跑 opencli；不依赖 PATH）
+   *  ✏️ 2026-10-01 19:59 —— 从视图类**移到插件类**：设置页（SettingTab）也要用它，
+   *  而 SettingTab 没有视图的方法 → 之前报 `this._findNode is not a function`。 */
+  _findNode() {
+    const cands = [
+      (this.settings || {}).creatorNode,
+      "C:/Program Files/nodejs/node.exe",
+      "C:/Program Files (x86)/nodejs/node.exe",
+    ].filter(Boolean);
+    let fs = null; try { fs = require("fs"); } catch { return null; }
+    for (const p of cands) { try { if (fs.existsSync(p)) return p; } catch {} }
+    return null;
+  }
+
+  /** 找 opencli 的 main.js（内嵌引擎直接 node 跑它，绕开 shell/PATH） */
+  _findOpencli() {
+    const home = (() => { try { return require("os").homedir(); } catch { return ""; } })();
+    const cands = [
+      (this.settings || {}).creatorOpencli,
+      home && home + "/.local/bin/node_modules/@jackwener/opencli/dist/src/main.js",
+    ].filter(Boolean);
+    let fs = null; try { fs = require("fs"); } catch { return null; }
+    for (const p of cands) { try { if (fs.existsSync(p)) return p; } catch {} }
+    return null;
+  }
+
   async onload() {
     await this.loadSettings();
     this.dw = this.loadDwLib();   // duowei 写库引擎（纯逻辑模块，可独立用 node 单测）
@@ -2281,6 +3369,8 @@ class XhsWorkbenchPlugin extends Plugin {
     this.addSettingTab(new WorkbenchSettingTab(this.app, this));
     this.addRibbonIcon("layout-dashboard", "打开带货工作台", () => this.activateView());
     this.addCommand({ id: "open-xhs-workbench", name: "打开带货工作台", callback: () => this.activateView() });
+    // ✏️ 2026-10-01 批 3.5：启动自动同步定时器（每 30 秒检查是否到点）
+    this.setupAutoSync();
     console.log("[xhs-workbench] loaded");
   }
 
@@ -2732,7 +3822,23 @@ class XhsWorkbenchPlugin extends Plugin {
     const m = snap.dw.mine;
     snap.dw.mineToday = m ? m.records.some((r) => String(m.val(r, "日期") || "").startsWith(todayISO())) : false;
 
+    // ✏️ 2026-10-01 批 3：创作者后台 JSON 缓存（没有就是 null —— 页面走空态，不编数）
+    snap.creator = await this.loadCreator();
+
     return snap;
+  }
+
+  /** 读 `creator-latest.json`。文件不在 → null（调用方负责显示空态）。
+   *  ✏️ 笔记本 PC · 2026-10-01 19:35 —— V2 批 3 新增。路径走 P.creatorDir（库内相对路径）。 */
+  async loadCreator() {
+    try {
+      const p = P.creatorDir + "/creator-latest.json";
+      const raw = await this.app.vault.adapter.read(p);
+      const j = JSON.parse(raw);
+      return j && typeof j === "object" ? j : null;
+    } catch (e) {
+      return null;
+    }
   }
 
   async loadDw(snap, key, file) {

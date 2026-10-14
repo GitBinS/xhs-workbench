@@ -43,6 +43,12 @@ const INLINE_DUOWEI_JS = "/* ═════════════════
 
 const P = {
   wencang: "10-小红书带货/20-文案库",
+  /* ✏️ 2026-10-02 19:20 —— 老哥把「已发布的成品笔记」收进了子目录 `20-文案库/笔记/`
+     （理由：笔记会越写越多，平铺在 `20-文案库` 直下会越来越长）。
+     🔴 工作台原来扫的是 `P.wencang` **直下** → 移进子目录后就**扫不到笔记卡**了。
+     → 新增 `noteDir` 并让「找笔记卡」的两处（`loadSnapshot` / `_creatorBackfill`）改用它。
+     ⚠️ `P.wencang` 本身**保留**：`选题库-<品名>.md` 还在 `20-文案库` 直下（第 951 行在用）。 */
+  noteDir: "10-小红书带货/20-文案库/笔记",
   tplDir: "10-小红书带货/20-文案库/模板卡",
   todoDir: "10-小红书带货/20-文案库/待拆解",
   taskDir: "10-小红书带货/20-文案库/文案生成任务单",
@@ -1227,7 +1233,7 @@ class WorkbenchView extends ItemView {
 
     const prompt = "请严格按下面这份任务单生成笔记卡：\n" +
       "· 条数严格 = " + 条数 + "，不多不少；\n" +
-      "· 每篇 = 一个笔记卡文件，写进 `10-小红书带货/20-文案库/`（命名照任务单 §六④，序号接着现有最大号往后排）；\n" +
+      "· 每篇 = 一个笔记卡文件，写进 `10-小红书带货/20-文案库/笔记/`（命名照任务单 §六④，序号接着现有最大号往后排）；\n" +
       "· 生成完把文件名回填进任务单的「五、输出」（任务单：" + taskPath + "）。\n" +
       "\n—————— 任务单全文 ——————\n\n" + content;
     try { await navigator.clipboard.writeText(prompt); }
@@ -1936,7 +1942,7 @@ class WorkbenchView extends ItemView {
     const md = folder && folder.children ? folder.children.filter((f) => f.extension === "md") : [];
     if (!md.length) { new Notice("待拆解是空的 —— 先去创作台「爆款采集」投喂", 8000); return; }
     const sorted = md.slice().sort((a, b) => (a.stat.mtime || 0) - (b.stat.mtime || 0)); // FIFO：先采先拆，不饿死老文件
-    const LIMIT = 10; // 结构文档 §4.4：单次上限 ≤10
+    const LIMIT = 5; // 2026-10-03：从 10 调到 5 —— 4 篇就撞 5 分钟超时，且库规 §5 尾写着「一次处理一篇，保持人在环」
     const batch = sorted.slice(0, LIMIT);
     const rest = sorted.length - batch.length;
     const lines = [];
@@ -1950,14 +1956,18 @@ class WorkbenchView extends ItemView {
       lines.push((lines.length + 1) + ". " + f.path + link);
     }
     const instr = "请批量拆解「" + P.todoDir + "」里的 " + batch.length + " 篇爆款"
-      + (rest > 0 ? "（另有 " + rest + " 篇超出单次上限 10，下一批再拆）" : "") + "：\n\n"
+      + (rest > 0 ? "（另有 " + rest + " 篇超出单次上限 5，下一批再拆）" : "") + "：\n\n"
       + lines.join("\n")
       + "\n\n拆解要求（库内已确认口径）：\n"
-      + "1. 三轴打标 + 封面大字（**看图**记入 cover_text）+ 合规定级 + 必答「本次有没有可抽象的框架？」\n"
-      + "2. 拆解格式以 `10-小红书带货/20-文案库/_模板-爆款拆解卡.md` 为唯一权威；汇总写入 `10-小红书带货/20-文案库/拆解汇总-<批次>.md`（一行一篇）\n"
+      + "1. 逐篇填拆解六项：标题公式 / 开头钩子 / 结构 / 结局数字 / 封面大字原文 + 封面形态（**看图**取，写入 `封面大字` 字段）/ 合规风险\n"
+      + "2. 三轴打标（`结构类型` / `来源` / `封面风格`）；拆解格式以 `10-小红书带货/20-文案库/_模板-爆款拆解卡.md` 为唯一权威（**键名照模板**；`博主` / `笔记链接` / `发布日期` 两边同名，直接抄即可）。\n"
+      + "   汇总**更新对应**的 `10-小红书带货/20-文案库/拆解汇总-*.md`（一行一篇）。\n"
+      + "   🔴 **同赛道同品要并入既有那份，不要新建** —— 合起来才看得出「哪些是稳定共性、哪些只是个别写法」（既有做法：第 1 批 8 篇 + 第 2 批 3 篇 = `拆解汇总-睡眠赛道11篇.md`）；**确无对应汇总时才新建**。\n"
       + "3. 输出逐篇独立 —— 每篇一份拆解，可逐篇检查；单篇可打回重拆\n"
-      + "4. 立卡门槛：同品对标须同类 ≥2 篇；跨类目 / 通用方法论单篇即可（status: 待测）\n"
-      + "5. 全部拆完后：原文移入 `10-小红书带货/20-文案库/拆解原文/`，`待拆解/` 清空";
+      + "4. **必答一句：本次素材里有没有可抽象的框架？** 有 → 立模板卡（同品对标须同类 ≥2 篇；跨类目 / 通用方法论单篇即可）；**没有 → 在汇总里写明为什么没有**；不够立卡的记入选题库当角度（`状态: 待测`）\n"
+      + "5. 全部拆完后：原文移入 `10-小红书带货/20-文案库/拆解原文/`，`待拆解/` 清空\n"
+      + "6. 收尾：更新 `10-小红书带货/50-知识库/index.md`，追加 `10-小红书带货/50-知识库/log.md`\n"
+      + "7. 合规按 `10-小红书带货/40-进化准则/文案生成准则.md` 第六节：功效表达只能「放松仪式 / 睡前氛围 / 帮我更快进入状态」，禁症状词与药物暗示";
     try { await navigator.clipboard.writeText(instr); }
     catch (e) { new Notice("复制失败 —— 请手动记录 待拆解/ 里的文件名", 9000); return; }
     new Notice("已复制拆解指令 ✓（" + batch.length + " 篇）→ 去对话粘贴发送；拆完原文会移入 拆解原文/", 14000);
@@ -2684,7 +2694,7 @@ class WorkbenchView extends ItemView {
     const norm = (s) => String(s || "").replace(/[\s\u3000]/g, "")
       .replace(/[，。！？、；：""''（）【】《》…—～·,\.!\?;:'"()\[\]<>~\-_/\\|]/g, "").toLowerCase();
     const ad = this.app.vault.adapter;
-    const dir = P.wencang;
+    const dir = P.noteDir;      // ✏️ 2026-10-02：笔记卡在子目录（原为 P.wencang 直下）
     let files = [];
     try { const r = await ad.list(dir); files = (r && r.files) || []; } catch { return null; }
 
@@ -3893,7 +3903,8 @@ class XhsWorkbenchPlugin extends Plugin {
 
     snap.plan = parsePlan(await read(P.plan));
 
-    for (const f of await list(P.wencang)) {
+    // ✏️ 2026-10-02：笔记卡改扫 `P.noteDir`（子目录）；`type: template` 仍扫 `P.tplDir`
+    for (const f of await list(P.noteDir)) {
       if (!/\.md$/.test(f) || /\/_模板-/.test(f)) continue;
       const txt = await read(f);
       if (txt == null) continue;

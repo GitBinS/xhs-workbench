@@ -2651,7 +2651,9 @@ class WorkbenchView extends ItemView {
         new Notice("✅ 同步完成（" + secs + " 秒）\n账号：" + (result.account || "?") +
           "\n笔记：" + result.note_count + " 篇" +
           (result.errors.length ? "\n⚠️ 错误 " + result.errors.length + " 条" : "") +
-          (bf ? "\n落库：写 " + bf.planned + " 张卡" + (bf.unmatched ? "，未匹配 " + bf.unmatched + " 条" : "") : ""), 15000);
+          (bf ? "\n落库：写 " + bf.planned + " 张卡" +
+            (bf.unmatched ? "\n⚠️ 未匹配 " + bf.unmatched + " 条（在对应笔记卡 frontmatter 手工加「笔记ID: 下列 ID」即可关联）：\n" +
+              (bf.unmatchedDetail || []).map((u) => "· " + (u.title || "?") + " → 笔记ID: " + u.noteId).join("\n") : "") : ""), 25000);
       }
       await this.refreshSnapshot(); this.renderAll(this.data);
       return result;
@@ -2707,7 +2709,18 @@ class WorkbenchView extends ItemView {
       const fm = {}; mf[1].split("\n").forEach((l) => { const m = l.match(/^([^:\s][^:]*):\s*(.*)$/); if (m) fm[m[1].trim()] = m[2].trim().replace(/^["']|["']$/g, ""); });
       if (fm.type !== "note") continue;
       const h1 = (txt.match(/^#\s+(.+)$/m) || [, ""])[1].trim();
-      cards.push({ path: f, name: f.split("/").pop(), txt, fm, h1 });
+      // ✏️ 桌面 PC 端 · 2026-10-27 —— 解析卡正文「标题 3 选 1」候选组（反引号内文本），参与同步匹配；
+      // 解析不到 = 空数组，行为与旧版一致（安全降级）
+      const candTitles = [];
+      {
+        const mi = txt.indexOf("**标题 3 选 1**");
+        if (mi >= 0) {
+          const seg = txt.slice(mi, mi + 400);
+          const re = /`([^`\n]{4,})`/g; let m2;
+          while ((m2 = re.exec(seg)) && candTitles.length < 5) candTitles.push(norm(m2[1]));
+        }
+      }
+      cards.push({ path: f, name: f.split("/").pop(), txt, fm, h1, candTitles });
     }
     const byId = new Map(); for (const c of cards) if (c.fm["笔记ID"]) byId.set(String(c.fm["笔记ID"]).trim(), c);
 
@@ -2722,7 +2735,9 @@ class WorkbenchView extends ItemView {
         const cand = cards.filter((c) => {
           if (String(c.fm["发布日期"] || "").slice(0, 10) !== pub) return false;
           const ch = norm(c.h1);
-          return ch && (ch === nt || ch.includes(nt) || nt.includes(ch));
+          if (ch && (ch === nt || ch.includes(nt) || nt.includes(ch))) return true;
+          // ✏️ 桌面 PC 端 · 2026-10-27 —— 候选标题组参与匹配（发布时选了非默认候选也能对上）
+          return (c.candTitles || []).some((ct) => ct === nt || ct.includes(nt) || nt.includes(ct));
         });
         if (cand.length === 1) { card = cand[0]; how = "发布日期+标题"; }
         else if (cand.length > 1) { unmatched.push({ noteId: nid, why: "标题+日期命中 " + cand.length + " 张卡，不唯一" }); continue; }
@@ -2734,6 +2749,39 @@ class WorkbenchView extends ItemView {
       const pub = String(((det["笔记信息"] || {}).published_at) || "").slice(0, 10);
       if (pub && !String(card.fm["发布日期"] || "").trim()) fields["发布日期"] = pub;
       plan.push({ card, fields, how });
+    }
+
+    // ✏️ 桌面 PC 端 · 2026-10-27 —— 第二遍：日期唯一兜底。主循环标题/ID 都没匹配上的数据，
+    // 若某发布日期下「未匹配数据恰好 1 条 + 该日期未被占用的已发布卡恰好 1 张」→ 配对；
+    // 保守条件防错配；配对后写入笔记ID，此后走 ID 直配。
+    if (unmatched.length) {
+      const usedCards = new Set(plan.map((p) => p.card.path));
+      for (let ui = unmatched.length - 1; ui >= 0; ui--) {
+        const u = unmatched[ui];
+        const n = (result.note_ids || []).find((x) => String(x.noteId || "").trim() === u.noteId);
+        if (!n) continue;
+        const det = n.detail || {}, info = det["笔记信息"] || {};
+        const pub = String(info.published_at || n.date || "").slice(0, 10);
+        if (!pub) continue;
+        const sameDayCards = cards.filter((c) => String(c.fm["发布日期"] || "").slice(0, 10) === pub && !usedCards.has(c.path));
+        if (sameDayCards.length !== 1) continue;
+        const sameDayUn = unmatched.filter((x) => {
+          const n2 = (result.note_ids || []).find((y) => String(y.noteId || "").trim() === x.noteId);
+          if (!n2) return false;
+          const i2 = (n2.detail || {})["笔记信息"] || {};
+          return String((i2.published_at || n2.date) || "").slice(0, 10) === pub;
+        });
+        if (sameDayUn.length !== 1) continue;
+        const card = sameDayCards[0];
+        const fields = {};
+        for (const [sec, key] of FIELD_MAP) { const v = (det[sec] || {})[key]; if (usable(v)) fields[key] = String(v).trim(); }
+        if (!card.fm["笔记ID"]) fields["笔记ID"] = u.noteId;
+        const pubv = String(((det["笔记信息"] || {}).published_at) || "").slice(0, 10);
+        if (pubv && !String(card.fm["发布日期"] || "").trim()) fields["发布日期"] = pubv;
+        plan.push({ card, fields, how: "发布日期唯一" });
+        usedCards.add(card.path);
+        unmatched.splice(ui, 1);
+      }
     }
 
     let written = 0;

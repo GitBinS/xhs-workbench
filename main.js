@@ -3402,6 +3402,19 @@ class XhsWorkbenchPlugin extends Plugin {
       (this.settings || {}).creatorNode,
       "C:/Program Files/nodejs/node.exe",
       "C:/Program Files (x86)/nodejs/node.exe",
+      // ✏️ 桌面 PC 端 · 2026-10-27 —— 新增 WorkBuddy 自管 node 动态探测（读 versions/current 拼路径），
+      // 防 node 升级清版本目录后失效 —— 10-01/10-26 两次同步阵亡的同源根因
+      (() => {
+        try {
+          const fs0 = require("fs"), os0 = require("os");
+          const base = os0.homedir() + "/.workbuddy/binaries/node/versions/";
+          if (!fs0.existsSync(base + "current")) return null;
+          const ver = fs0.readFileSync(base + "current", "utf-8").trim();
+          if (!ver) return null;
+          const exe = base + ver + "/node.exe";
+          return fs0.existsSync(exe) ? exe : null;
+        } catch { return null; }
+      })(),
     ].filter(Boolean);
     let fs = null; try { fs = require("fs"); } catch { return null; }
     for (const p of cands) { try { if (fs.existsSync(p)) return p; } catch {} }

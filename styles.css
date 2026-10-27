@@ -510,3 +510,12 @@
 
 /* ── B5 · 依赖条中态（未探测） ── */
 .xhs-wb-root .dep-i i.mut-dot { background: var(--text-faint, #999); opacity: .55; }
+
+/* ── ✏️ 笔记本 PC · 2026-10-01 21:52 ─────────────────────────────────────
+   资源表（知识库 · 资源子页签）两处：
+   ① 状态列原来 100px，「登录号待确认」这种长药丸会顶出格子 → 加宽到 158px
+   ② 药丸本身不换行，防止被压成两行
+   （列宽写在 colgroup 的 <col> 上，CSS 用 nth-child 覆盖，比改内联 HTML 稳） */
+.xhs-wb-root #k-tool .tb col:nth-child(3){width:158px!important}
+.xhs-wb-root #k-tool .tb th:last-child,.xhs-wb-root #k-tool .tb td:last-child{white-space:nowrap}
+.xhs-wb-root #k-tool .tb .pill{white-space:nowrap}

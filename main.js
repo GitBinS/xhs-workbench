@@ -144,7 +144,7 @@ const numberedOf = (s) =>
 
 /** 解析已确认的「30天启动清单」拿 Day N（不另建状态） */
 function parsePlan(text) {
-  const out = { day: null, remain: null, phase: null, base: null };
+  const out = { day: null, remain: null, phase: null, base: null, done: false, over: null };
   if (!text) return out;
   const m = text.match(/(\d{4}-\d{2}-\d{2})\s*=\s*Day\s*0/);
   if (!m) return out;
@@ -153,6 +153,10 @@ function parsePlan(text) {
   if (d < 0) return out;
   out.day = d;
   out.remain = Math.max(0, 30 - d);
+  // 单周期 30 天：超过即「已完成」。第二月路线图文档尚未产出 → 本批只标完成态，
+  // 不启用下一阶段机制。预留：若日后 00-行动看板/ 出现「第二月路线图.md」（含
+  // 「Day 31 起 = 阶段X」之类约定），在此处与渲染段接入读取即可。
+  if (d > 30) { out.done = true; out.over = d - 30; }
   const rows = [];
   const re = /\|\s*\d+\.\s*([^|\n]+?)\s*\|\s*Day\s*(\d+)\s*-\s*(\d+)\s*\|/g;
   let r;
@@ -812,7 +816,9 @@ class WorkbenchView extends ItemView {
       if (rest) {
         rest.innerHTML = pl.day == null
           ? "启动清单里没找到「Day 0」基准"
-          : `<b>${esc(pl.phase || "未匹配到阶段")}</b> · 剩 ${pl.remain} 天`;
+          : pl.done
+            ? `<b>30 天计划已完成 ✓</b> · 第 ${pl.over} 天（第二月路线图未产出，见启动清单 Day 29-30 复盘项）`
+            : `<b>${esc(pl.phase || "未匹配到阶段")}</b> · 剩 ${pl.remain} 天`;
       }
       const daysEl = dwrap.querySelector(".days");
       if (daysEl && pl.day != null) {
